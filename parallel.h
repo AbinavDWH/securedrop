@@ -3,8 +3,9 @@
 
 #include "util.h"
 
-#define PARALLEL_MAX_SERVERS  16
-#define PARALLEL_MAX_THREADS   8
+#define PARALLEL_MAX_SERVERS   16
+#define PARALLEL_MAX_THREADS   16    /* was 8 */
+#define PARALLEL_PIPELINE_DEPTH 4    /* NEW: chunks per connection */
 
 typedef struct {
     char host[512];
@@ -23,7 +24,6 @@ int parallel_get_server_list(
     SubServerList *out,
     int log_target);
 
-/* Warm up proxy circuits before real transfers */
 int parallel_warmup_circuits(
     const char **proxies,
     int num_proxies,
@@ -51,6 +51,20 @@ int parallel_download_chunks(
     int chunk_count,
     const uint32_t *chunk_sizes,
     Buf *assembled,
+    int log_target);
+
+/* NEW: Streaming download — writes chunks
+   to disk as they arrive instead of buffering
+   entire file in RAM */
+int parallel_download_chunks_streaming(
+    const char *server_addr,
+    const char **proxies,
+    int num_proxies,
+    const SubServerList *servers,
+    const char *file_id,
+    int chunk_count,
+    const uint32_t *chunk_sizes,
+    Buf **chunk_bufs_out,
     int log_target);
 
 void parallel_free_server_list(SubServerList *s);

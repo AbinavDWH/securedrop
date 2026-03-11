@@ -14,7 +14,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔══════════════════════════════════════╗"
-echo "║  SecureDrop v4.0 — Setup            ║"
+echo "║  SecureDrop v4.0 — Setup             ║"
 echo "╚══════════════════════════════════════╝"
 echo -e "${NC}"
 

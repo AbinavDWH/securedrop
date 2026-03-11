@@ -12,6 +12,7 @@ int      buf_add(Buf *b, const void *src, size_t n);
 void     buf_u32(Buf *b, uint32_t v);
 void     buf_u64(Buf *b, uint64_t v);
 void     buf_free(Buf *b);
+void     buf_reserve(Buf *b, size_t n);
 
 /* Network byte-order readers */
 uint32_t rd32(const unsigned char *p);

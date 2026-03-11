@@ -88,7 +88,7 @@ void gui_build(void)
         GTK_HEADER_BAR(app.header_bar), TRUE);
     gtk_header_bar_set_title(
         GTK_HEADER_BAR(app.header_bar),
-        "SecureDrop");
+        "\xF0\x9F\x94\x92 SecureDrop");
     gtk_header_bar_set_subtitle(
         GTK_HEADER_BAR(app.header_bar),
         "v" APP_VERSION " | AES-256-GCM | RSA-2048 | "

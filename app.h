@@ -24,7 +24,7 @@
 
 /* ── Constants ─────────────────────────────────────────────── */
 #define APP_NAME            "SecureDrop"
-#define APP_VERSION         "4.0.0"
+#define APP_VERSION         "4.1.0"
 #define CHUNK_SIZE          (512 * 1024)
 #define AES_KEY_LEN         32
 #define AES_IV_LEN          12

@@ -71,6 +71,53 @@ void buf_free(Buf *b)
     memset(b, 0, sizeof(*b));
 }
 
+/* ──────────────────────────────────────────────────────────────
+ * buf_reserve — pre-allocate capacity without changing length
+ *
+ * Ensures the buffer can hold at least `n` MORE bytes
+ * without realloc. Call before bulk buf_add() to avoid
+ * repeated doubling during large downloads.
+ *
+ * Without this, assembling 500MB from 500 chunks causes:
+ *   4KB → 8KB → 16KB → ... → 512MB = ~17 reallocs
+ *   Each realloc copies ALL previous data
+ *
+ * With this, ONE allocation upfront:
+ *   reserve(500MB) → single malloc
+ *   All buf_add() calls just memcpy, no realloc
+ * ────────────────────────────────────────────────────────────── */
+
+void buf_reserve(Buf *b, size_t n)
+{
+    if (!b) return;
+
+    size_t needed = b->len + n;
+
+    /* First allocation */
+    if (!b->data) {
+        b->data = malloc(needed);
+        if (b->data)
+            b->cap = needed;
+        else
+            b->cap = 0;
+        b->len = 0;
+        return;
+    }
+
+    /* Already have enough */
+    if (b->cap >= needed)
+        return;
+
+    /* Grow to exact needed size */
+    unsigned char *tmp = realloc(b->data, needed);
+    if (tmp) {
+        b->data = tmp;
+        b->cap  = needed;
+    }
+}
+
+/* ── Network byte-order readers ────────────────────────────── */
+
 uint32_t rd32(const unsigned char *p)
 {
     uint32_t v;

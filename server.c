@@ -93,43 +93,44 @@ static void *onion_setup_thread(void *arg)
     return NULL;
 }
 
-/* ────────────────────────────────────────────────────────────
-   DETECT IF REQUEST CAME VIA .ONION
-   
-   If the client connected through Tor to our
-   .onion address, we can only return sub-server
-   entries that are ALSO reachable via Tor
-   (i.e. have their own .onion address).
-   
-   We can't return 127.0.0.1:10005 because the
-   client is remote — they can't reach our
-   localhost.
-   
-   We can't return main.onion:10005 because
-   the main Tor only forwards port 80.
-   ──────────────────────────────────────────────────────────── */
-
 static int request_is_remote(
     struct MHD_Connection *conn)
 {
-    /*
-     * If the connection comes from 127.0.0.1,
-     * it's either:
-     *   - A LAN client connecting directly
-     *   - Tor forwarding a .onion request
-     *
-     * We can't easily distinguish these, so
-     * we check: does main Tor exist?
-     * If yes, assume some clients are remote.
-     *
-     * Better approach: check the Host header
-     * for .onion suffix.
-     */
     const char *host = MHD_lookup_connection_value(
         conn, MHD_HEADER_KIND, "Host");
 
     if (host && strstr(host, ".onion"))
         return 1;
+
+    return 0;
+}
+
+/* ────────────────────────────────────────────────────────────
+   PARSE file_id + password FROM REQUEST BODY
+   
+   Wire format: [64 bytes file_id] \0 [password]
+   
+   Used by /download, /download-parallel
+   ──────────────────────────────────────────────────────────── */
+
+static int parse_download_request(
+    const unsigned char *data, size_t len,
+    char *file_id_out, char *password_out,
+    size_t password_max)
+{
+    if (len <= FILE_ID_HEX_LEN + 1)
+        return -1;
+
+    memcpy(file_id_out, data, FILE_ID_HEX_LEN);
+    file_id_out[FILE_ID_HEX_LEN] = '\0';
+
+    size_t poff = FILE_ID_HEX_LEN + 1;
+    size_t plen = len - poff;
+    if (plen > password_max - 1)
+        plen = password_max - 1;
+
+    memcpy(password_out, data + poff, plen);
+    password_out[plen] = '\0';
 
     return 0;
 }
@@ -146,7 +147,10 @@ static enum MHD_Result main_handler(
 {
     (void)cls; (void)version;
 
-    /* GET /ping */
+    /* ════════════════════════════════════════════
+       GET /ping
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "GET") == 0 &&
         strcmp(url, "/ping") == 0) {
 
@@ -164,7 +168,10 @@ static enum MHD_Result main_handler(
         return rv;
     }
 
-    /* POST /upload */
+    /* ════════════════════════════════════════════
+       POST /upload — standard single-connection
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "POST") == 0 &&
         strcmp(url, "/upload") == 0) {
 
@@ -204,7 +211,6 @@ static enum MHD_Result main_handler(
                 file_id);
             resp = resp_buf;
             status = 200;
-            app.upload_count++;
             gui_post_uploads(app.upload_count);
         } else {
             resp = "{\"status\":\"error\"}\n";
@@ -228,7 +234,15 @@ static enum MHD_Result main_handler(
         return rv;
     }
 
-    /* POST /download */
+    /* ════════════════════════════════════════════
+       POST /download — single-connection download
+       
+       Works for BOTH regular and parallel-uploaded
+       files. For parallel files (distributed=2),
+       retrieves chunks from sub-servers using
+       deterministic routing.
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "POST") == 0 &&
         strcmp(url, "/download") == 0) {
 
@@ -250,19 +264,14 @@ static enum MHD_Result main_handler(
         char file_id[FILE_ID_HEX_LEN + 1] = {0};
         char password[256] = {0};
 
-        if (sc->buf.len >
-            FILE_ID_HEX_LEN + 1) {
-            memcpy(file_id, sc->buf.data,
-                   FILE_ID_HEX_LEN);
-            size_t poff = FILE_ID_HEX_LEN + 1;
-            size_t plen = sc->buf.len - poff;
-            if (plen > sizeof(password) - 1)
-                plen = sizeof(password) - 1;
-            memcpy(password,
-                   sc->buf.data + poff, plen);
-        } else {
+        if (parse_download_request(
+                sc->buf.data, sc->buf.len,
+                file_id, password,
+                sizeof(password)) != 0) {
+
             const char *e =
-                "{\"error\":\"bad\"}\n";
+                "{\"error\":\"malformed "
+                "request\"}\n";
             struct MHD_Response *r =
                 MHD_create_response_from_buffer(
                     strlen(e), (void *)e,
@@ -281,6 +290,10 @@ static enum MHD_Result main_handler(
         free(sc);
         *con_cls = NULL;
 
+        gui_post_log(LOG_SERVER,
+            "/download request for %.16s...",
+            file_id);
+
         Buf response;
         buf_init(&response);
         int rc = protocol_build_download(
@@ -289,6 +302,12 @@ static enum MHD_Result main_handler(
         secure_wipe(password, sizeof(password));
 
         if (rc == 0) {
+            char sz[64];
+            human_size(response.len, sz,
+                       sizeof(sz));
+            gui_post_log(LOG_SERVER,
+                "Sending %s to client", sz);
+
             struct MHD_Response *r =
                 MHD_create_response_from_buffer(
                     response.len, response.data,
@@ -306,18 +325,73 @@ static enum MHD_Result main_handler(
                 app.download_count);
             return rv;
         }
+
         buf_free(&response);
-        const char *e =
-            "{\"error\":\"denied\"}\n";
+
+        /* ── Diagnostic 403 response ──────── */
+
+        gui_post_log(LOG_SERVER,
+            "Download DENIED for %.16s...",
+            file_id);
+
+        /* Check WHY it failed */
+        int found = 0;
+        pthread_mutex_lock(&app.stored_mutex);
+        for (int i = 0;
+             i < app.stored_file_count; i++) {
+            if (strcmp(
+                    app.stored_files[i].file_id,
+                    file_id) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&app.stored_mutex);
+
+        char err_buf[512];
+        if (!found) {
+            snprintf(err_buf, sizeof(err_buf),
+                "{\"error\":\"file_not_found\","
+                "\"file_id\":\"%.16s...\","
+                "\"stored_count\":%d}\n",
+                file_id,
+                app.stored_file_count);
+            gui_post_log(LOG_SERVER,
+                "File ID %.16s... NOT FOUND "
+                "(%d files stored)",
+                file_id,
+                app.stored_file_count);
+        } else {
+            snprintf(err_buf, sizeof(err_buf),
+                "{\"error\":"
+                "\"wrong_password_or_"
+                "chunk_error\","
+                "\"file_id\":\"%.16s...\"}\n",
+                file_id);
+            gui_post_log(LOG_SERVER,
+                "File %.16s... found but "
+                "password wrong or chunk "
+                "retrieval failed", file_id);
+        }
+
         struct MHD_Response *r =
             MHD_create_response_from_buffer(
-                strlen(e), (void *)e,
-                MHD_RESPMEM_PERSISTENT);
-        return MHD_queue_response(
-            conn, 403, r);
+                strlen(err_buf),
+                (void *)err_buf,
+                MHD_RESPMEM_MUST_COPY);
+        MHD_add_response_header(r,
+            "Content-Type",
+            "application/json");
+        enum MHD_Result rv =
+            MHD_queue_response(conn, 403, r);
+        MHD_destroy_response(r);
+        return rv;
     }
 
-    /* GET /list */
+    /* ════════════════════════════════════════════
+       GET /list
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "GET") == 0 &&
         strcmp(url, "/list") == 0) {
 
@@ -337,11 +411,14 @@ static enum MHD_Result main_handler(
                 "%s{\"id\":\"%.16s...\","
                 "\"name\":\"%s\","
                 "\"size\":\"%s\","
-                "\"chunks\":%u}",
+                "\"chunks\":%u,"
+                "\"distributed\":%d}",
                 i > 0 ? "," : "",
                 m->file_id, m->original_name,
-                sz, m->chunk_count);
-            buf_add(&json, entry, strlen(entry));
+                sz, m->chunk_count,
+                m->distributed);
+            buf_add(&json, entry,
+                    strlen(entry));
         }
         pthread_mutex_unlock(&app.stored_mutex);
 
@@ -360,7 +437,10 @@ static enum MHD_Result main_handler(
         return rv;
     }
 
-    /* GET / or /status */
+    /* ════════════════════════════════════════════
+       GET / or /status
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "GET") == 0 &&
         (strcmp(url, "/") == 0 ||
          strcmp(url, "/status") == 0)) {
@@ -416,20 +496,6 @@ static enum MHD_Result main_handler(
 
     /* ════════════════════════════════════════════
        GET /servers — sub-server list
-
-       CRITICAL RULE:
-       Only return addresses the client can
-       actually reach.
-
-       For .onion clients:
-         - ONLY sub-servers with their own
-           independent .onion address
-         - NEVER main_onion:sub_port (main Tor
-           only forwards port 80)
-         - NEVER 127.0.0.1:port (client is remote)
-
-       For LAN clients:
-         - 127.0.0.1:port or LAN_IP:port
        ════════════════════════════════════════════ */
 
     if (strcmp(method, "GET") == 0 &&
@@ -455,21 +521,6 @@ static enum MHD_Result main_handler(
             char line[512];
 
             if (remote) {
-                /*
-                 * Client connected via .onion
-                 *
-                 * ONLY include sub-servers that
-                 * have their OWN independent
-                 * .onion address with Tor ready.
-                 *
-                 * Each independent .onion maps
-                 * virtual port 80 to the sub-
-                 * server's local port.
-                 *
-                 * DO NOT fall back to
-                 * main.onion:10005 — that port
-                 * is NOT in main Tor's torrc.
-                 */
                 if (ss->tor_ready &&
                     ss->onion_addr[0]) {
                     snprintf(line, sizeof(line),
@@ -479,16 +530,7 @@ static enum MHD_Result main_handler(
                             strlen(line));
                     listed++;
                 }
-                /* Skip sub-servers without
-                   their own .onion — they are
-                   simply unreachable from
-                   remote clients */
-
             } else {
-                /*
-                 * LAN client — direct access
-                 * to local ports
-                 */
                 snprintf(line, sizeof(line),
                     "%s:%d\n",
                     lan_ip, ss->port);
@@ -502,16 +544,13 @@ static enum MHD_Result main_handler(
 
         if (listed == 0) {
             buf_free(&list);
-
-            /* Tell client why */
             const char *reason;
             if (remote) {
                 reason =
                     "{\"error\":"
                     "\"no sub-servers have "
                     "independent .onion "
-                    "addresses yet — use "
-                    "single-connection mode\"}\n";
+                    "addresses yet\"}\n";
             } else {
                 reason =
                     "{\"error\":"
@@ -535,10 +574,9 @@ static enum MHD_Result main_handler(
         }
 
         gui_post_log(LOG_SERVER,
-            "/servers: returning %d "
-            "sub-servers (%s client)",
+            "/servers: %d sub-servers (%s)",
             listed,
-            remote ? "remote/.onion" : "LAN");
+            remote ? "remote" : "LAN");
 
         struct MHD_Response *r =
             MHD_create_response_from_buffer(
@@ -553,9 +591,24 @@ static enum MHD_Result main_handler(
         return rv;
     }
 
-    /* POST /upload-parallel */
+    /* ════════════════════════════════════════════
+       POST /upload-parallel
+       POST /upload-parallel/{file_id}
+       
+       FIX: Accept file_id from URL path.
+       Client computed file_id = SHA256(full
+       payload including chunks). We MUST use
+       this same file_id because chunks are
+       already stored on sub-servers under it.
+       
+       If we compute our own SHA256 from metadata-
+       only bytes, we get a DIFFERENT hash and
+       downloads will fail with 403 (not found).
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "POST") == 0 &&
-        strcmp(url, "/upload-parallel") == 0) {
+        strncmp(url, "/upload-parallel",
+                16) == 0) {
 
         if (!*con_cls) {
             ServerConn *sc =
@@ -572,12 +625,49 @@ static enum MHD_Result main_handler(
             return MHD_YES;
         }
 
+        /* Extract file_id from URL if present
+           
+           URL can be:
+             /upload-parallel
+             /upload-parallel/
+             /upload-parallel/{64-char-hex}
+        */
+        char external_fid[FILE_ID_HEX_LEN + 1]
+            = {0};
+
+        if (strlen(url) > 17 &&
+            url[16] == '/') {
+            const char *fid_str = url + 17;
+            size_t fid_len = strlen(fid_str);
+
+            /* Remove trailing slash */
+            if (fid_len > 0 &&
+                fid_str[fid_len - 1] == '/')
+                fid_len--;
+
+            if (fid_len >= 16 &&
+                fid_len <= FILE_ID_HEX_LEN) {
+                memcpy(external_fid, fid_str,
+                       fid_len);
+                external_fid[fid_len] = '\0';
+
+                gui_post_log(LOG_SERVER,
+                    "Parallel upload with "
+                    "client file_id: "
+                    "%.16s...",
+                    external_fid);
+            }
+        }
+
         char file_id[FILE_ID_HEX_LEN + 1] = {0};
         int rc = protocol_parse_upload_metadata(
             sc->buf.data, sc->buf.len,
-            file_id, LOG_SERVER);
+            file_id,
+            external_fid[0] ?
+                external_fid : NULL,
+            LOG_SERVER);
 
-        char resp_buf[256];
+        char resp_buf[512];
         const char *resp;
         int status;
 
@@ -589,11 +679,22 @@ static enum MHD_Result main_handler(
                 file_id);
             resp = resp_buf;
             status = 200;
-            app.upload_count++;
             gui_post_uploads(app.upload_count);
+
+            gui_post_log(LOG_SERVER,
+                "\xE2\x9C\x93 Parallel "
+                "metadata stored: %s",
+                file_id);
         } else {
-            resp = "{\"status\":\"error\"}\n";
+            snprintf(resp_buf, sizeof(resp_buf),
+                "{\"status\":\"error\","
+                "\"detail\":\"metadata "
+                "parse failed\"}\n");
+            resp = resp_buf;
             status = 500;
+
+            gui_post_log(LOG_SERVER,
+                "Parallel metadata FAILED");
         }
 
         struct MHD_Response *r =
@@ -613,9 +714,17 @@ static enum MHD_Result main_handler(
         return rv;
     }
 
-    /* POST /download-parallel */
+    /* ════════════════════════════════════════════
+       POST /download-parallel
+       POST /download-meta
+       
+       Returns metadata header only.
+       Client fetches chunks from sub-servers.
+       ════════════════════════════════════════════ */
+
     if (strcmp(method, "POST") == 0 &&
-        strcmp(url, "/download-parallel") == 0) {
+        (strcmp(url, "/download-parallel") == 0 ||
+         strcmp(url, "/download-meta") == 0)) {
 
         if (!*con_cls) {
             ServerConn *sc =
@@ -635,22 +744,17 @@ static enum MHD_Result main_handler(
         char file_id[FILE_ID_HEX_LEN + 1] = {0};
         char password[256] = {0};
 
-        if (sc->buf.len >
-            FILE_ID_HEX_LEN + 1) {
-            memcpy(file_id, sc->buf.data,
-                   FILE_ID_HEX_LEN);
-            size_t poff = FILE_ID_HEX_LEN + 1;
-            size_t plen = sc->buf.len - poff;
-            if (plen > sizeof(password) - 1)
-                plen = sizeof(password) - 1;
-            memcpy(password,
-                   sc->buf.data + poff, plen);
-        } else {
+        if (parse_download_request(
+                sc->buf.data, sc->buf.len,
+                file_id, password,
+                sizeof(password)) != 0) {
+
             buf_free(&sc->buf);
             free(sc);
             *con_cls = NULL;
             const char *e =
-                "{\"error\":\"bad\"}\n";
+                "{\"error\":\"malformed "
+                "request\"}\n";
             struct MHD_Response *r =
                 MHD_create_response_from_buffer(
                     strlen(e), (void *)e,
@@ -663,6 +767,10 @@ static enum MHD_Result main_handler(
         free(sc);
         *con_cls = NULL;
 
+        gui_post_log(LOG_SERVER,
+            "/download-parallel for "
+            "%.16s...", file_id);
+
         Buf response;
         buf_init(&response);
         int rc =
@@ -672,6 +780,13 @@ static enum MHD_Result main_handler(
         secure_wipe(password, sizeof(password));
 
         if (rc == 0) {
+            char sz[64];
+            human_size(response.len, sz,
+                       sizeof(sz));
+            gui_post_log(LOG_SERVER,
+                "Sending metadata %s "
+                "(parallel)", sz);
+
             struct MHD_Response *r =
                 MHD_create_response_from_buffer(
                     response.len, response.data,
@@ -691,17 +806,55 @@ static enum MHD_Result main_handler(
         }
 
         buf_free(&response);
-        const char *e =
-            "{\"error\":\"denied\"}\n";
+
+        /* Diagnostic: why did it fail? */
+        int found = 0;
+        pthread_mutex_lock(&app.stored_mutex);
+        for (int i = 0;
+             i < app.stored_file_count; i++) {
+            if (strcmp(
+                    app.stored_files[i].file_id,
+                    file_id) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&app.stored_mutex);
+
+        char err_buf[512];
+        if (!found) {
+            snprintf(err_buf, sizeof(err_buf),
+                "{\"error\":\"file_not_found\","
+                "\"file_id\":\"%.16s...\"}\n",
+                file_id);
+            gui_post_log(LOG_SERVER,
+                "PARALLEL: file %.16s... "
+                "NOT FOUND", file_id);
+        } else {
+            snprintf(err_buf, sizeof(err_buf),
+                "{\"error\":"
+                "\"wrong_password\"}\n");
+            gui_post_log(LOG_SERVER,
+                "PARALLEL: wrong password "
+                "for %.16s...", file_id);
+        }
+
         struct MHD_Response *r =
             MHD_create_response_from_buffer(
-                strlen(e), (void *)e,
-                MHD_RESPMEM_PERSISTENT);
+                strlen(err_buf),
+                (void *)err_buf,
+                MHD_RESPMEM_MUST_COPY);
+        MHD_add_response_header(r,
+            "Content-Type",
+            "application/json");
         return MHD_queue_response(
             conn, 403, r);
     }
 
-    /* 404 */
+    /* ════════════════════════════════════════════
+       404 — unknown endpoint
+       ════════════════════════════════════════════ */
+
     const char *nf =
         "{\"error\":\"not found\"}\n";
     struct MHD_Response *r =
@@ -746,10 +899,14 @@ void server_start(int log_target)
     }
 
     app.server_daemon = MHD_start_daemon(
-        MHD_USE_INTERNAL_POLLING_THREAD |
+        MHD_USE_THREAD_PER_CONNECTION |
         MHD_USE_ERROR_LOG,
         SERVER_PORT, NULL, NULL,
         &main_handler, NULL,
+        MHD_OPTION_CONNECTION_LIMIT,
+        (unsigned int)64,
+        MHD_OPTION_CONNECTION_TIMEOUT,
+        (unsigned int)300,
         MHD_OPTION_END);
 
     if (!app.server_daemon) {
@@ -775,7 +932,8 @@ void server_start(int log_target)
     gui_post_address(log_target, display);
 
     gui_post_log(log_target,
-        "Server on port %d", SERVER_PORT);
+        "Server on port %d "
+        "(multi-threaded)", SERVER_PORT);
 
     gui_post_log(log_target,
         "Starting main Tor hidden service...");
@@ -791,7 +949,7 @@ void server_start(int log_target)
         pthread_detach(t);
     } else {
         gui_post_log(log_target,
-            "Tor unavailable — LAN-only mode");
+            "Tor unavailable — LAN-only");
     }
 }
 
