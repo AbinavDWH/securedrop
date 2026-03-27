@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "storage.h"
 #include "crypto.h"
 #include "gui_helpers.h"
@@ -22,12 +40,34 @@
 #define MHD_CONN_LIMIT         64
 #define STREAM_WRITE_THRESHOLD 0   /* 0 = always stream        */
 
+
+
+static int validate_file_id(const char *fid)
+{
+    size_t len = strlen(fid);
+    if (len == 0 || len > FILE_ID_HEX_LEN)
+        return -1;
+    for (size_t i = 0; i < len; i++) {
+        char c = fid[i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return -1;
+    }
+    return 0;
+}
+
+
 /* ──────────────────────────────────────────────────────────────
  * INITIALIZATION
  * ────────────────────────────────────────────────────────────── */
 
+
+
+
 void storage_init(void)
 {
+    mkdir_p(KEY_DIR, 0700);
     mkdir_p(STORE_DIR, 0700);
     mkdir_p(META_DIR, 0700);
     mkdir_p(OUTPUT_DIR, 0700);
@@ -41,6 +81,14 @@ void storage_init(void)
             (size_t)app.sub_servers_cap,
             sizeof(SubServer));
         app.num_sub_servers = 0;
+    }
+
+    if (!app.stored_files) {
+        app.stored_files_cap = 64;
+        app.stored_files = calloc(
+            (size_t)app.stored_files_cap,
+            sizeof(StoredFileMeta));
+        app.stored_file_count = 0;
     }
 }
 
@@ -70,6 +118,33 @@ static int ensure_subserver_capacity(void)
 
     app.sub_servers = new_arr;
     app.sub_servers_cap = new_cap;
+    return 0;
+}
+
+ int ensure_stored_capacity(void)
+{
+    if (app.stored_file_count < app.stored_files_cap)
+        return 0;
+
+    int new_cap = app.stored_files_cap * 2;
+    if (new_cap > MAX_STORED_FILES)
+        new_cap = MAX_STORED_FILES;
+
+    if (app.stored_file_count >= new_cap)
+        return -1;
+
+    StoredFileMeta *new_arr = realloc(
+        app.stored_files,
+        (size_t)new_cap * sizeof(StoredFileMeta));
+
+    if (!new_arr) return -1;
+
+    memset(&new_arr[app.stored_files_cap], 0,
+           (size_t)(new_cap - app.stored_files_cap)
+           * sizeof(StoredFileMeta));
+
+    app.stored_files = new_arr;
+    app.stored_files_cap = new_cap;
     return 0;
 }
 
@@ -112,7 +187,11 @@ static size_t curl_write_buf(void *data,
                              void *userp)
 {
     CurlBufCtx *ctx = userp;
+    if (size != 0 && nmemb > SIZE_MAX / size)
+        return 0;
     size_t total = size * nmemb;
+    if (ctx->buf->len + total > (size_t)64 * 1024 * 1024)
+        return 0;
     buf_add(ctx->buf, data, total);
     return total;
 }
@@ -691,6 +770,22 @@ int storage_load_all_meta(int log_target)
         fclose(fp);
 
         if (nr == 1) {
+            meta->original_name[sizeof(meta->original_name) - 1] = '\0';
+            meta->file_id[FILE_ID_HEX_LEN] = '\0';
+
+            for (char *x = meta->original_name; *x; x++)
+                if (*x == '/' || *x == '\\') *x = '_';
+
+            if (meta->chunk_count > MAX_CHUNKS)
+                meta->chunk_count = 0;
+
+            if (meta->rsa_pub_len > sizeof(meta->rsa_pub_pem))
+                meta->rsa_pub_len = 0;
+            if (meta->erp_len > sizeof(meta->enc_rsa_priv))
+                meta->erp_len = 0;
+            if (meta->emk_len > sizeof(meta->enc_master_key))
+                meta->emk_len = 0;
+
             app.stored_file_count++;
             count++;
         }
@@ -867,55 +962,38 @@ enum MHD_Result subserver_handler(
 
         /* First call — create connection state
            and open output file */
-        if (!*con_cls) {
-            char fid[128];
+                if (!*con_cls) {
+            char fid[128] = {0};
             uint32_t cidx = 0;
 
-            if (sscanf(url,
-                    "/store/%127[^/]/%u",
-                    fid, &cidx) != 2) {
+            if (sscanf(url, "/store/%64[^/]/%u", fid, &cidx) != 2 ||
+                validate_file_id(fid) != 0 ||
+                cidx > 999999) {
 
                 const char *e = "Bad URL\n";
                 struct MHD_Response *r =
                     MHD_create_response_from_buffer(
-                        strlen(e), (void *)e,
-                        MHD_RESPMEM_PERSISTENT);
-                enum MHD_Result rv =
-                    MHD_queue_response(
-                        conn, 400, r);
+                        strlen(e), (void *)e, MHD_RESPMEM_PERSISTENT);
+                enum MHD_Result rv = MHD_queue_response(conn, 400, r);
                 MHD_destroy_response(r);
                 return rv;
-            }
-
-            /* Sanitize file_id */
-            for (char *c = fid; *c; c++) {
-                if (!( (*c >= 'a' && *c <= 'f') ||
-                       (*c >= '0' && *c <= '9') ))
-                    *c = '_';
             }
 
             char dir[4096];
             chunk_dir_path(dir, sizeof(dir), fid);
             mkdir_p(dir, 0700);
 
-            SubConn *sc = calloc(1,
-                sizeof(SubConn));
-            chunk_file_path(sc->path,
-                sizeof(sc->path), fid, cidx);
+            SubConn *sc = calloc(1, sizeof(SubConn));
+            chunk_file_path(sc->path, sizeof(sc->path), fid, cidx);
 
-            /* Open file for streaming write */
             sc->fp = fopen(sc->path, "wb");
             if (!sc->fp) {
                 free(sc);
-                const char *e =
-                    "Cannot create file\n";
+                const char *e = "Cannot create file\n";
                 struct MHD_Response *r =
                     MHD_create_response_from_buffer(
-                        strlen(e), (void *)e,
-                        MHD_RESPMEM_PERSISTENT);
-                enum MHD_Result rv =
-                    MHD_queue_response(
-                        conn, 500, r);
+                        strlen(e), (void *)e, MHD_RESPMEM_PERSISTENT);
+                enum MHD_Result rv = MHD_queue_response(conn, 500, r);
                 MHD_destroy_response(r);
                 return rv;
             }
@@ -932,16 +1010,20 @@ enum MHD_Result subserver_handler(
            to disk */
         if (*upload_data_size > 0) {
             if (!sc->error && sc->fp) {
-                size_t w = fwrite(
-                    upload_data, 1,
-                    *upload_data_size,
-                    sc->fp);
-
-                if (w != *upload_data_size) {
+                if (sc->total + *upload_data_size > (size_t)64 * 1024 * 1024) {
                     sc->error = 1;
-                }
+                } else {
+                    size_t w = fwrite(
+                        upload_data, 1,
+                        *upload_data_size,
+                        sc->fp);
 
-                sc->total += w;
+                    if (w != *upload_data_size) {
+                        sc->error = 1;
+                    }
+
+                    sc->total += w;
+                }
             }
 
             *upload_data_size = 0;
@@ -1001,29 +1083,20 @@ enum MHD_Result subserver_handler(
         char fid[128];
         uint32_t cidx = 0;
 
-        if (sscanf(url,
-                "/retrieve/%127[^/]/%u",
-                fid, &cidx) != 2) {
+        if (sscanf(url, "/retrieve/%64[^/]/%u", fid, &cidx) != 2 ||
+            validate_file_id(fid) != 0 ||
+            cidx > 999999) {
 
             const char *e = "Bad URL\n";
             struct MHD_Response *r =
                 MHD_create_response_from_buffer(
-                    strlen(e), (void *)e,
-                    MHD_RESPMEM_PERSISTENT);
-            enum MHD_Result rv =
-                MHD_queue_response(
-                    conn, 400, r);
+                    strlen(e), (void *)e, MHD_RESPMEM_PERSISTENT);
+            enum MHD_Result rv = MHD_queue_response(conn, 400, r);
             MHD_destroy_response(r);
             return rv;
         }
 
-        /* Sanitize */
-        for (char *c = fid; *c; c++) {
-            if (!( (*c >= 'a' && *c <= 'f') ||
-                   (*c >= '0' && *c <= '9') ))
-                *c = '_';
-        }
-
+        
         char path[4096];
         chunk_file_path(path, sizeof(path),
                         fid, cidx);
@@ -1082,29 +1155,14 @@ enum MHD_Result subserver_handler(
        GET /delete/{file_id}/{chunk_idx}
        ═══════════════════════════════════════════ */
 
-    if (strcmp(method, "GET") == 0 &&
+        if (strcmp(method, "GET") == 0 &&
         strncmp(url, "/delete/", 8) == 0) {
 
-        char fid[128];
-        uint32_t cidx = 0;
-
-        if (sscanf(url,
-                "/delete/%127[^/]/%u",
-                fid, &cidx) == 2) {
-
-            char path[4096];
-            chunk_file_path(path, sizeof(path),
-                            fid, cidx);
-            unlink(path);
-        }
-
-        const char *ok = "Deleted\n";
+        const char *denied = "Forbidden\n";
         struct MHD_Response *r =
             MHD_create_response_from_buffer(
-                strlen(ok), (void *)ok,
-                MHD_RESPMEM_PERSISTENT);
-        enum MHD_Result rv =
-            MHD_queue_response(conn, 200, r);
+                strlen(denied), (void *)denied, MHD_RESPMEM_PERSISTENT);
+        enum MHD_Result rv = MHD_queue_response(conn, 403, r);
         MHD_destroy_response(r);
         return rv;
     }
@@ -1176,7 +1234,14 @@ int storage_start_subserver(int index,
      *   = parallel request handling
      */
 
+    struct sockaddr_in sub_bind;
+    memset(&sub_bind, 0, sizeof(sub_bind));
+    sub_bind.sin_family = AF_INET;
+    sub_bind.sin_port = htons((uint16_t)ss->port);
+    sub_bind.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
     ss->daemon = MHD_start_daemon(
+        MHD_USE_INTERNAL_POLLING_THREAD |
         MHD_USE_THREAD_PER_CONNECTION |
         MHD_USE_ERROR_LOG,
         (uint16_t)ss->port,
@@ -1186,6 +1251,8 @@ int storage_start_subserver(int index,
         (unsigned int)MHD_CONN_LIMIT,
         MHD_OPTION_CONNECTION_TIMEOUT,
         (unsigned int)30,
+        MHD_OPTION_SOCK_ADDR,
+        (struct sockaddr *)&sub_bind,
         MHD_OPTION_END);
 
     if (!ss->daemon) {

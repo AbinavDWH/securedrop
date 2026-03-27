@@ -16,11 +16,11 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef GUI_PAGE_RECV_H
-#define GUI_PAGE_RECV_H
+#ifndef GUI_PAGE_ADVANCED_H
+#define GUI_PAGE_ADVANCED_H
 
 #include "app.h"
 
-GtkWidget *gui_build_recv_page(void);
+GtkWidget *gui_build_advanced_page(void);
 
-#endif
+#endif /* GUI_PAGE_ADVANCED_H */

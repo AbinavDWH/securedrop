@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "gui_helpers.h"
 #include "util.h"
 
@@ -45,6 +63,15 @@ static gboolean gui_idle(gpointer data)
         buf = app.server_log_buf;
         log_view = app.server_log_view;
         break;
+    case LOG_P2P:
+        buf = app.p2p_log_buf;
+        prog = app.p2p_progress;
+        log_view = app.p2p_log_view;
+        break;
+    case LOG_ADVANCED:
+        buf = app.adv_log_buf;
+        log_view = app.adv_log_view;
+        break;
     }
 
     /* Append log message */
@@ -79,12 +106,32 @@ static gboolean gui_idle(gpointer data)
     if (u->address && addr_lbl) {
         gtk_label_set_text(GTK_LABEL(addr_lbl), u->address);
         free(u->address);
+
+        /* Stop server animation — server is now active */
+        if (u->target == LOG_SHARE && app.server_anim_timer) {
+            g_source_remove(app.server_anim_timer);
+            app.server_anim_timer = 0;
+            if (app.share_server_badge) {
+                gtk_widget_set_opacity(
+                    app.share_server_badge, 1.0);
+                GtkStyleContext *sc =
+                    gtk_widget_get_style_context(
+                        app.share_server_badge);
+                gtk_style_context_remove_class(
+                    sc, "server-starting-badge");
+                gtk_style_context_add_class(
+                    sc, "server-active-badge");
+                gtk_label_set_text(
+                    GTK_LABEL(app.share_server_badge),
+                    "  Server Active  ");
+            }
+        }
     }
 
     /* Update download count */
     if (u->upd_dl && app.share_dl_label) {
         char d[64];
-        snprintf(d, sizeof(d), "%d", u->downloads);
+        snprintf(d, sizeof(d), "Downloads: %d", u->downloads);
         gtk_label_set_text(GTK_LABEL(app.share_dl_label), d);
     }
 

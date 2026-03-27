@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "util.h"
 #include <openssl/crypto.h>
 #include <ctype.h>
@@ -34,10 +52,17 @@ void buf_init(Buf *b)
 
 int buf_add(Buf *b, const void *src, size_t n)
 {
+    if (n == 0) return 0;
+    if (b->len + n < b->len)
+        return -1;
     if (b->len + n > b->cap) {
         size_t nc = b->cap ? b->cap : 4096;
-        while (nc < b->len + n)
-            nc *= 2;
+        while (nc < b->len + n) {
+            size_t doubled = nc * 2;
+            if (doubled <= nc)
+                return -1;
+            nc = doubled;
+        }
         unsigned char *t = realloc(b->data, nc);
         if (!t) return -1;
         b->data = t;
@@ -90,10 +115,10 @@ void buf_free(Buf *b)
 void buf_reserve(Buf *b, size_t n)
 {
     if (!b) return;
-
+    if (b->len + n < b->len)
+        return;
     size_t needed = b->len + n;
 
-    /* First allocation */
     if (!b->data) {
         b->data = malloc(needed);
         if (b->data)
@@ -104,15 +129,13 @@ void buf_reserve(Buf *b, size_t n)
         return;
     }
 
-    /* Already have enough */
     if (b->cap >= needed)
         return;
 
-    /* Grow to exact needed size */
     unsigned char *tmp = realloc(b->data, needed);
     if (tmp) {
         b->data = tmp;
-        b->cap  = needed;
+        b->cap = needed;
     }
 }
 

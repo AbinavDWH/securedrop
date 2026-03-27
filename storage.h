@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #ifndef STORAGE_H
 #define STORAGE_H
 
@@ -10,9 +28,9 @@
 #define META_DIR       "file_meta"
 #define OUTPUT_DIR     "received_files"
 
-#define SUB_PORT_BASE  9100
-#define SUB_PORT_MAX   9999
-#define MAX_SUB_SERVERS 256
+// #define SUB_PORT_BASE  9100
+// #define SUB_PORT_MAX   9999
+// #define MAX_SUB_SERVERS 256
 
 /* ── Init ─────────────────────────────────────── */
 void storage_init(void);
@@ -71,5 +89,12 @@ enum MHD_Result subserver_handler(
     const char *upload_data,
     size_t *upload_data_size,
     void **con_cls);
+
+
+int storage_active_subserver_count(void);
+
+int ensure_stored_capacity(void);
+
+
 
 #endif /* STORAGE_H */

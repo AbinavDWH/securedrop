@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "gui_page_recv.h"
 #include "gui_helpers.h"
 #include "client.h"
@@ -87,29 +105,23 @@ GtkWidget *gui_build_recv_page(void)
 {
     GtkWidget *page = gtk_box_new(
         GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(page), 14);
+    gtk_container_set_border_width(GTK_CONTAINER(page), 20);
 
     /* Header */
-    GtkWidget *hdr = gtk_box_new(
-        GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_pack_start(GTK_BOX(hdr),
-        gtk_image_new_from_icon_name(
-            "folder-download", GTK_ICON_SIZE_DND),
-        FALSE, FALSE, 0);
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
                          "<b>Receive Files</b>");
     gtk_style_context_add_class(
         gtk_widget_get_style_context(title), "sec-title");
-    gtk_box_pack_start(GTK_BOX(hdr), title, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(page), hdr, FALSE, FALSE, 0);
+    gtk_widget_set_halign(title, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(page), title, FALSE, FALSE, 0);
 
     GtkWidget *sub_lbl = gtk_label_new(
         "Download encrypted files using "
         "File ID + Password. "
         "Supports .onion addresses via Tor.");
     gtk_style_context_add_class(
-        gtk_widget_get_style_context(sub_lbl), "dim-text");
+        gtk_widget_get_style_context(sub_lbl), "page-subtitle");
     gtk_widget_set_halign(sub_lbl, GTK_ALIGN_START);
     gtk_label_set_line_wrap(GTK_LABEL(sub_lbl), TRUE);
     gtk_box_pack_start(GTK_BOX(page),
@@ -122,7 +134,7 @@ GtkWidget *gui_build_recv_page(void)
         gtk_widget_get_style_context(tor_bar), "status-box");
 
     GtkWidget *tor_icon = gtk_label_new(
-        "\xF0\x9F\x8C\x8D");  /* 🌍 */
+        "*");
     gtk_box_pack_start(GTK_BOX(tor_bar),
                        tor_icon, FALSE, FALSE, 0);
 
@@ -213,7 +225,7 @@ GtkWidget *gui_build_recv_page(void)
 
     /* Fetch button */
     app.recv_fetch_btn = mkbtn(
-        "\xF0\x9F\x94\x93  Download & Decrypt", "act-btn");
+        "Download & Decrypt", "act-btn");
     g_signal_connect(app.recv_fetch_btn, "clicked",
                      G_CALLBACK(on_fetch), NULL);
     gtk_widget_set_halign(app.recv_fetch_btn, GTK_ALIGN_START);

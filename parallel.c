@@ -1,7 +1,26 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "parallel.h"
 #include "gui_helpers.h"
 #include "util.h"
 #include "app.h"
+#include "advanced_config.h"
 
 #include <curl/curl.h>
 #include <string.h>
@@ -51,7 +70,11 @@ static size_t p_write_cb(void *data, size_t size,
                          size_t nmemb, void *userp)
 {
     PCurlCtx *ctx = userp;
+    if (size != 0 && nmemb > SIZE_MAX / size)
+        return 0;
     size_t total = size * nmemb;
+    if (ctx->buf->len + total > (size_t)64 * 1024 * 1024)
+        return 0;
     buf_add(ctx->buf, data, total);
     return total;
 }
@@ -545,13 +568,14 @@ static void *upload_worker(void *arg)
     pthread_mutex_unlock(&ctx->mutex);
 
     /* Create persistent CURL handle */
+    CurlSlot *slot = NULL;
     const char *my_proxy = NULL;
-    if (ctx->proxies && ctx->num_proxies > 0)
-        my_proxy = ctx->proxies[
-            my_id % ctx->num_proxies];
 
-    CurlSlot *slot = curl_slot_create(
-        my_proxy, ctx->is_onion);
+    if (ctx->proxies && ctx->num_proxies > 0) {
+        my_proxy = ctx->proxies[my_id % ctx->num_proxies];
+    }
+
+    slot = curl_slot_create(my_proxy, ctx->is_onion);
     if (!slot) return NULL;
 
     for (;;) {
@@ -566,6 +590,12 @@ static void *upload_worker(void *arg)
         int si = ci % ctx->servers->count;
         const SubServerEntry *srv =
             &ctx->servers->entries[si];
+
+        if (ctx->proxies && ctx->num_proxies > 0 &&
+            ctx->num_proxies >= ctx->servers->count) {
+            curl_easy_setopt(slot->handle, CURLOPT_PROXY,
+                ctx->proxies[si % ctx->num_proxies]);
+        }
 
         char url[1024];
         snprintf(url, sizeof(url),
@@ -731,7 +761,9 @@ int parallel_upload_chunks(
         if (warm == 0) return -1;
     }
 
-    int nthreads = PARALLEL_MAX_THREADS;
+    int nthreads = servers->count;
+    if (nthreads > PARALLEL_MAX_THREADS)
+        nthreads = PARALLEL_MAX_THREADS;
     if (nthreads > chunk_count)
         nthreads = chunk_count;
     if (nthreads > servers->count *
@@ -844,13 +876,14 @@ static void *download_worker(void *arg)
 
     /* ── Create persistent CURL slot ───────── */
 
+    CurlSlot *slot = NULL;
     const char *my_proxy = NULL;
-    if (ctx->proxies && ctx->num_proxies > 0)
-        my_proxy = ctx->proxies[
-            my_id % ctx->num_proxies];
 
-    CurlSlot *slot = curl_slot_create(
-        my_proxy, ctx->is_onion);
+    if (ctx->proxies && ctx->num_proxies > 0) {
+        my_proxy = ctx->proxies[my_id % ctx->num_proxies];
+    }
+
+    slot = curl_slot_create(my_proxy, ctx->is_onion);
     if (!slot) return NULL;
 
     int consecutive_ok = 0;
@@ -864,11 +897,21 @@ static void *download_worker(void *arg)
         if (fail || ci >= ctx->chunk_count)
             break;
 
-        /* ── Determine target server ───────── */
-
         int si = ci % ctx->servers->count;
         const SubServerEntry *srv =
             &ctx->servers->entries[si];
+
+        if (ctx->proxies && ctx->num_proxies > 0 &&
+            ctx->num_proxies >= ctx->servers->count) {
+            curl_easy_setopt(slot->handle, CURLOPT_PROXY,
+                ctx->proxies[si % ctx->num_proxies]);
+        }
+
+        if (ctx->proxies && ctx->num_proxies > 0 &&
+            ctx->num_proxies >= ctx->servers->count) {
+            const char *srv_proxy = ctx->proxies[si % ctx->num_proxies];
+            curl_easy_setopt(slot->handle, CURLOPT_PROXY, srv_proxy);
+        }
 
         char url[1024];
         snprintf(url, sizeof(url),
@@ -879,8 +922,12 @@ static void *download_worker(void *arg)
         Buf *chunk = &ctx->chunk_bufs[ci];
         int success = 0;
 
+        int max_retries = adv_config.max_retries > 0
+            ? adv_config.max_retries
+            : CHUNK_MAX_RETRIES;
+
         for (int attempt = 0;
-             attempt < CHUNK_MAX_RETRIES;
+             attempt < max_retries;
              attempt++) {
 
             /* ── Rotate proxy on retry ─────── */
@@ -915,6 +962,15 @@ static void *download_worker(void *arg)
                     slot->handle,
                     CURLOPT_FRESH_CONNECT,
                     1L);
+
+                /* SHORTER timeout on retry —
+                   if first server timed out,
+                   don't wait 120s on retry too */
+                long rtimeout = adv_config.retry_timeout_sec > 0
+                    ? (long)adv_config.retry_timeout_sec
+                    : (long)(ctx->is_onion ? 60 : 15);
+                curl_easy_setopt(slot->handle,
+                    CURLOPT_TIMEOUT, rtimeout);
             }
 
             /* Reset buffer for retry */
@@ -967,14 +1023,14 @@ static void *download_worker(void *arg)
                 "← %s:%d [%s] "
                 "(HTTP %ld: %s)",
                 ci, attempt + 1,
-                CHUNK_MAX_RETRIES,
+                max_retries,
                 srv->host, srv->port,
                 my_proxy ? my_proxy : "direct",
                 code,
                 curl_easy_strerror(res));
 
             if (attempt <
-                CHUNK_MAX_RETRIES - 1) {
+                max_retries - 1) {
                 int delay =
                     CHUNK_RETRY_BASE_SEC *
                     (1 << attempt);
@@ -987,7 +1043,7 @@ static void *download_worker(void *arg)
             gui_post_log(ctx->log_target,
                 "↓ Chunk %d FAILED after "
                 "%d attempts",
-                ci, CHUNK_MAX_RETRIES);
+                ci, max_retries);
             pthread_mutex_lock(&ctx->mutex);
             ctx->failed = 1;
             pthread_mutex_unlock(&ctx->mutex);
@@ -1085,7 +1141,10 @@ int parallel_download_chunks(
 
     /* ── Calculate thread count ────────────── */
 
-    int nthreads = PARALLEL_MAX_THREADS;
+    int nthreads = servers->count;
+
+    if (nthreads > PARALLEL_MAX_THREADS)
+        nthreads = PARALLEL_MAX_THREADS;
 
     if (nthreads > chunk_count)
         nthreads = chunk_count;
@@ -1097,6 +1156,13 @@ int parallel_download_chunks(
         nthreads = servers->count *
                    MAX_CONN_PER_SERVER;
 
+    /* Override thread count from advanced config */
+    if (adv_config.download_threads > 0 &&
+        adv_config.download_threads <= 128)
+        nthreads = adv_config.download_threads;
+
+    if (nthreads > chunk_count)
+        nthreads = chunk_count;
     if (nthreads < 1)
         nthreads = 1;
 
@@ -1165,9 +1231,11 @@ int parallel_download_chunks(
     pthread_t *threads = malloc(
         (size_t)nthreads * sizeof(pthread_t));
 
-    useconds_t stagger = is_onion ?
-        THREAD_STAGGER_ONION_US :
-        THREAD_STAGGER_LAN_US;
+    useconds_t stagger = adv_config.warmup_stagger_ms > 0
+        ? (useconds_t)(adv_config.warmup_stagger_ms * 1000)
+        : (is_onion ?
+            THREAD_STAGGER_ONION_US :
+            THREAD_STAGGER_LAN_US);
 
     struct timeval dl_start;
     gettimeofday(&dl_start, NULL);
@@ -1299,7 +1367,9 @@ int parallel_download_chunks_streaming(
             servers, log_target);
     }
 
-    int nthreads = PARALLEL_MAX_THREADS;
+    int nthreads = servers->count;
+    if (nthreads > PARALLEL_MAX_THREADS)
+        nthreads = PARALLEL_MAX_THREADS;
     if (nthreads > chunk_count)
         nthreads = chunk_count;
     if (nthreads > servers->count *

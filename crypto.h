@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #ifndef CRYPTO_H
 #define CRYPTO_H
 
@@ -38,7 +56,7 @@ int decrypt_blob(const unsigned char *key,
                  const unsigned char *ct, size_t ctlen,
                  unsigned char *pt_out, size_t *ptlen_out);
 
-/* RSA-2048 OAEP-SHA256 */
+/* RSA-4096 OAEP-SHA256 */
 int gen_rsa_keys_to_pem(unsigned char *pub_pem, size_t *pub_len,
                         unsigned char *priv_pem, size_t *priv_len);
 int gen_rsa_keys_to_file(const char *pub_file, const char *priv_file);

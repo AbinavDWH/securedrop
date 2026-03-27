@@ -1,11 +1,37 @@
+# SecureDrop — Encrypted File Sharing over Tor
+# Copyright (C) 2026  Abinav
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # ══════════════════════════════════════════════════════════════
-# SecureDrop v4.0 — Build System
+# SecureDrop v5.0 — Build System
 # ══════════════════════════════════════════════════════════════
 
 CC       = gcc
+
 CFLAGS   = -Wall -Wextra -Wno-unused-parameter -O2 -g \
            $(shell pkg-config --cflags gtk+-3.0) \
-           -D_GNU_SOURCE
+           -D_GNU_SOURCE \
+           -fstack-protector-strong \
+           -fPIE \
+           -D_FORTIFY_SOURCE=2 \
+           -Wformat \
+           -Wformat-security \
+           -Werror=format-security \
+           -fstack-clash-protection \
+           -fcf-protection \
+           -Wl,-z,noexecstack
 
 LDFLAGS  = $(shell pkg-config --libs gtk+-3.0) \
            -lmicrohttpd \
@@ -13,7 +39,11 @@ LDFLAGS  = $(shell pkg-config --libs gtk+-3.0) \
            -lssl \
            -lcrypto \
            -lpthread \
-           -lm
+           -lm \
+           -pie \
+           -Wl,-z,relro \
+           -Wl,-z,now \
+           -Wl,-z,noexecstack
 
 # ── Source files ───────────────────────────────────────────────
 SRCS = main.c \
@@ -37,7 +67,11 @@ SRCS = main.c \
        onion.c \
 		parallel.c \
        tor_pool.c\
-	    sub_tor.c
+	    sub_tor.c \
+       p2p.c \
+       gui_page_p2p.c \
+       advanced_config.c \
+       gui_page_advanced.c
 
 OBJS     = $(SRCS:.c=.o)
 TARGET   = securedrop
@@ -66,9 +100,14 @@ all: dirs $(TARGET)
 	@echo "════════════════════════════════════════"
 
 # ── Create required directories ────────────────────────────────
+KEY_DIR     = keys
+
 dirs:
 	@mkdir -p $(VAULT_DIR) $(STORE_DIR) $(OUTPUT_DIR) \
-	          $(META_DIR) $(TOR_DIR) 2>/dev/null || true
+	          $(META_DIR) $(TOR_DIR) $(KEY_DIR) 2>/dev/null || true
+	@chmod 700 $(VAULT_DIR) $(STORE_DIR) $(KEY_DIR) \
+	           $(META_DIR) $(TOR_DIR) 2>/dev/null || true
+	@chmod 755 $(OUTPUT_DIR) 2>/dev/null || true
 
 # ── Link ───────────────────────────────────────────────────────
 $(TARGET): $(OBJS)
@@ -81,9 +120,21 @@ $(TARGET): $(OBJS)
 # ── Stripped release binary ────────────────────────────────────
 release: $(TARGET)
 	strip -s $(TARGET) -o $(RELEASE)
+	chmod 755 $(RELEASE)
 	@echo ""
 	@echo "Release binary: $(RELEASE)"
 	@ls -lh $(RELEASE)
+	@echo ""
+	@echo "Security checks:"
+	@readelf -l $(RELEASE) 2>/dev/null | grep -q "GNU_STACK.*RW " \
+		&& echo "  [WARN] Executable stack detected" \
+		|| echo "  [OK]   Non-executable stack"
+	@readelf -d $(RELEASE) 2>/dev/null | grep -q "BIND_NOW" \
+		&& echo "  [OK]   Full RELRO" \
+		|| echo "  [WARN] Partial RELRO"
+	@file $(RELEASE) | grep -q "pie" \
+		&& echo "  [OK]   PIE enabled (ASLR)" \
+		|| echo "  [WARN] PIE not detected"
 
 # ── Run ────────────────────────────────────────────────────────
 run: all
@@ -134,7 +185,7 @@ clean:
 distclean: clean
 	rm -rf $(VAULT_DIR) $(STORE_DIR) $(OUTPUT_DIR) \
 	       $(META_DIR) $(TOR_DIR)
-	rm -f node_pub.pem node_priv.pem
+	rm -rf keys/
 
 # ── Nuclear option — remove all generated files ────────────────
 purge: distclean
@@ -162,7 +213,7 @@ help:
 # Header dependencies
 # ══════════════════════════════════════════════════════════════
 
-main.o:            main.c app.h gui.h tor.h storage.h onion.h
+main.o:            main.c app.h gui.h tor.h storage.h onion.h p2p.h advanced_config.h
 
 util.o:            util.c util.h app.h
 
@@ -188,7 +239,6 @@ gui_page_vault.o:  gui_page_vault.c gui_page_vault.h gui_helpers.h crypto.h util
 
 gui_page_server.o: gui_page_server.c gui_page_server.h gui_helpers.h server.h storage.h onion.h util.h app.h
 
-gui.o:             gui.c gui.h gui_css.h gui_page_share.h gui_page_recv.h gui_page_send.h gui_page_vault.h gui_page_server.h server.h app.h
 
 protocol.o:        protocol.c protocol.h storage.h crypto.h util.h gui_helpers.h app.h
 
@@ -205,3 +255,13 @@ parallel.o:        parallel.c parallel.h gui_helpers.h util.h tor.h app.h
 client.o:          client.c client.h protocol.h crypto.h gui_helpers.h util.h tor.h parallel.h tor_pool.h app.h
 
 sub_tor.o:  sub_tor.c sub_tor.h gui_helpers.h util.h app.h
+
+p2p.o:             p2p.c p2p.h crypto.h gui_helpers.h util.h network.h app.h
+
+gui_page_p2p.o:    gui_page_p2p.c gui_page_p2p.h gui_helpers.h p2p.h util.h app.h
+
+advanced_config.o: advanced_config.c advanced_config.h
+
+gui_page_advanced.o: gui_page_advanced.c gui_page_advanced.h gui_helpers.h advanced_config.h util.h app.h
+
+gui.o:             gui.c gui.h gui_css.h gui_page_share.h gui_page_recv.h gui_page_send.h gui_page_vault.h gui_page_server.h gui_page_p2p.h gui_page_advanced.h server.h p2p.h app.h

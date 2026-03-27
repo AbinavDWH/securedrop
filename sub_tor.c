@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "sub_tor.h"
 #include "gui_helpers.h"
 #include "util.h"
@@ -629,13 +647,11 @@ int sub_tor_start_all(int log_target)
 
     /* Cap at reasonable number to avoid
        overwhelming the system */
-    int max_tor = 8;
-    if (n > max_tor) {
-        gui_post_log(log_target,
-            "Limiting Tor instances to %d "
-            "(of %d sub-servers)", max_tor, n);
-        n = max_tor;
-    }
+        int max_tor = app.user_tor_count;
+    if (max_tor <= 0) max_tor = n;
+    if (max_tor > n) max_tor = n;
+    if (max_tor > MAX_SUB_SERVERS) max_tor = MAX_SUB_SERVERS;
+    n = max_tor;
 
     gui_post_log(log_target,
         "══════════════════════════"
@@ -888,4 +904,106 @@ void sub_tor_stop_all(int log_target)
     gui_post_log(log_target,
         "All sub-server Tor instances "
         "stopped");
+
+
+        
+}
+
+int sub_tor_start_selected(int count, int log_target)
+{
+    char tor_bin[512];
+    if (find_tor(tor_bin, sizeof(tor_bin)) != 0) {
+        gui_post_log(log_target,
+            "Tor not found — sub-servers LAN-only");
+        return 0;
+    }
+
+    pthread_mutex_lock(&app.subserver_mutex);
+    int n = app.num_sub_servers;
+    pthread_mutex_unlock(&app.subserver_mutex);
+
+    if (n == 0) return 0;
+    if (count <= 0) count = n;
+    if (count > n) count = n;
+    if (count > 64) count = 64;
+
+    gui_post_log(log_target,
+        "══════════════════════════════════════");
+    gui_post_log(log_target,
+        "Starting %d independent Tor hidden services...",
+        count);
+    gui_post_log(log_target,
+        "Each sub-server gets its own .onion address");
+    gui_post_log(log_target,
+        "══════════════════════════════════════");
+
+    int launched = 0;
+    for (int i = 0; i < count; i++) {
+        if (sub_tor_start(i, log_target) == 0)
+            launched++;
+        else
+            gui_post_log(log_target,
+                "  Sub[%d] launch failed", i);
+
+        if (i < count - 1)
+            usleep(1000000);
+    }
+
+    if (launched == 0) {
+        gui_post_log(log_target,
+            "No sub-server Tor instances started");
+        return 0;
+    }
+
+    gui_post_log(log_target,
+        "Launched %d Tor instances, waiting for "
+        "HS publication (up to %ds)...",
+        launched, SUB_TOR_TIMEOUT);
+
+    pthread_t *threads = malloc(
+        (size_t)count * sizeof(pthread_t));
+    int *thread_valid = calloc(
+        (size_t)count, sizeof(int));
+
+    for (int i = 0; i < count; i++) {
+        pthread_mutex_lock(&app.subserver_mutex);
+        int has_tor = (app.sub_servers[i].tor_pid > 0);
+        pthread_mutex_unlock(&app.subserver_mutex);
+
+        if (!has_tor) continue;
+
+        SubTorWaitArg *a = malloc(sizeof(*a));
+        a->sub_index = i;
+        a->log_target = log_target;
+
+        pthread_create(&threads[i], NULL,
+                       wait_thread, a);
+        thread_valid[i] = 1;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (thread_valid[i])
+            pthread_join(threads[i], NULL);
+    }
+
+    free(threads);
+    free(thread_valid);
+
+    int ready = 0;
+    pthread_mutex_lock(&app.subserver_mutex);
+    for (int i = 0; i < app.num_sub_servers; i++) {
+        if (app.sub_servers[i].tor_ready)
+            ready++;
+    }
+    pthread_mutex_unlock(&app.subserver_mutex);
+
+    gui_post_log(log_target,
+        "══════════════════════════════════════");
+    gui_post_log(log_target,
+        "%d/%d sub-server .onion services ready",
+        ready, count);
+    gui_post_log(log_target,
+        "══════════════════════════════════════");
+
+    return ready;
 }

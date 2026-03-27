@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -17,6 +35,8 @@
 #include "storage.h"
 #include "onion.h"
 #include "tor_pool.h"
+#include "p2p.h"
+#include "advanced_config.h"
 
 /* ── Global application state ──────────────────────────────── */
 
@@ -78,13 +98,13 @@ int main(int argc, char *argv[])
                   " — Encrypted Transfer  ║\n"
         "╠══════════════════════════════════════════╣\n"
         "║  AES-256-GCM  chunk encryption           ║\n"
-        "║  RSA-2048     key wrapping               ║\n"
+        "║  RSA-4096     key wrapping               ║\n"
         "║  HKDF-SHA256  key derivation             ║\n"
-        "║  PBKDF2       password protection        ║\n"
+        "║  PBKDF2-1M    password protection        ║\n"
         "║  Multi-Tor    circuit rotation           ║\n"
         "║  Distributed  chunk storage              ║\n"
         "║  Tor Onion    hidden service             ║\n"
-        "║  Ports        10000–10999 (1000 max)     ║\n"
+        "║  Zero Trust   rate-limited access        ║\n"
         "╚══════════════════════════════════════════╝\n"
         "\n");
 
@@ -115,6 +135,9 @@ int main(int argc, char *argv[])
         SERVER_PORT,
         SUB_PORT_BASE, SUB_PORT_MAX, MAX_SUB_SERVERS);
 
+    /* Load persistent advanced config */
+    adv_config_load();
+
     /* Build and show GUI */
     gui_build();
 
@@ -125,6 +148,10 @@ int main(int argc, char *argv[])
      * CLEANUP — Order matters!
      * ══════════════════════════════════════════════════════════ */
     fprintf(stderr, "[SecureDrop] Cleaning up...\n");
+
+    /* 0. Stop P2P sender (kills P2P Tor processes + sub-servers) */
+    if (p2p_is_running())
+        p2p_stop_sender(LOG_P2P);
 
     /* 1. Stop onion service (kills Tor child process) */
     onion_stop(LOG_SERVER);

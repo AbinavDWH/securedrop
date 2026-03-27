@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "client.h"
 #include "protocol.h"
 #include "crypto.h"
@@ -16,10 +34,16 @@
 
 typedef struct { Buf *buf; } CurlCtx;
 
-static size_t write_callback(void *data, size_t size,size_t nmemb, void *userp)
+static size_t write_callback(void *data, size_t size, size_t nmemb, void *userp)
 {
     CurlCtx *ctx = userp;
+    if (size != 0 && nmemb > SIZE_MAX / size)
+        return 0;
     size_t total = size * nmemb;
+    if (ctx->buf->len + total < ctx->buf->len)
+        return 0;
+    if (ctx->buf->len + total > (size_t)512 * 1024 * 1024)
+        return 0;
     buf_add(ctx->buf, data, total);
     return total;
 }
@@ -237,15 +261,37 @@ static void *upload_thread(void *arg)
         if (pxr > 0)
             mp = main_proxy;
 
-        /* Step 1: Get sub-server list */
+        /* Step 1: Get sub-server list
+           Retry for .onion servers since
+           sub-server Tor may still be
+           bootstrapping (takes 1-2 min) */
         SubServerList servers;
-        int nsrv = parallel_get_server_list(
-            server_addr, mp,
-            &servers, LOG_SEND);
+        int nsrv = 0;
+        int max_srv_attempts =
+            is_onion_address(server_addr) ? 6 : 1;
+
+        for (int sa = 0;
+             sa < max_srv_attempts && nsrv <= 0;
+             sa++) {
+            if (sa > 0) {
+                gui_post_log(LOG_SEND,
+                    "Waiting for sub-servers "
+                    "(%d/%d, 15s)...",
+                    sa + 1, max_srv_attempts);
+                gui_post_progress(LOG_SEND,
+                    0.3 + 0.05 * sa);
+                sleep(15);
+            }
+            nsrv = parallel_get_server_list(
+                server_addr, mp,
+                &servers, LOG_SEND);
+        }
 
         if (nsrv <= 0) {
             gui_post_log(LOG_SEND,
-                "No sub-servers available");
+                "No sub-servers available "
+                "after %d attempts",
+                max_srv_attempts);
             goto single_upload;
         }
 
@@ -267,9 +313,11 @@ static void *upload_thread(void *arg)
             gui_post_log(LOG_SEND,
                 "Starting Tor proxy pool...");
 
-            int pool_count = 8;
-            if (pool_count > nsrv)
-                pool_count = nsrv;
+            int pool_count = nsrv;
+            if (pool_count > TOR_POOL_MAX)
+                pool_count = TOR_POOL_MAX;
+            if (pool_count < 4)
+                pool_count = 4;
 
             int ready = tor_pool_start(
                 pool_count, LOG_SEND);
@@ -780,16 +828,35 @@ static void *download_thread(void *arg)
         }
         if (pxr > 0) mp = main_proxy;
 
-        /* Step 1: Get sub-server list */
+        /* Step 1: Get sub-server list
+           Retry for .onion servers */
         SubServerList servers;
-        int nsrv = parallel_get_server_list(
-            server_addr, mp,
-            &servers, LOG_RECV);
+        int nsrv = 0;
+        int max_srv_attempts =
+            is_onion_address(server_addr) ? 4 : 1;
+
+        for (int sa = 0;
+             sa < max_srv_attempts && nsrv <= 0;
+             sa++) {
+            if (sa > 0) {
+                gui_post_log(LOG_RECV,
+                    "Waiting for sub-servers "
+                    "(%d/%d, 10s)...",
+                    sa + 1, max_srv_attempts);
+                gui_post_progress(LOG_RECV,
+                    0.1 + 0.05 * sa);
+                sleep(10);
+            }
+            nsrv = parallel_get_server_list(
+                server_addr, mp,
+                &servers, LOG_RECV);
+        }
 
         if (nsrv <= 0) {
             gui_post_log(LOG_RECV,
-                "No sub-servers — "
-                "single mode");
+                "No sub-servers after "
+                "%d attempts — single mode",
+                max_srv_attempts);
             goto single_download;
         }
 
@@ -810,9 +877,11 @@ static void *download_thread(void *arg)
             gui_post_log(LOG_RECV,
                 "Starting Tor proxy pool...");
 
-            int pool_count = 8;
-            if (pool_count > nsrv)
-                pool_count = nsrv;
+            int pool_count = nsrv;
+            if (pool_count > TOR_POOL_MAX)
+                pool_count = TOR_POOL_MAX;
+            if (pool_count < 4)
+                pool_count = 4;
 
             int ready = tor_pool_start(
                 pool_count, LOG_RECV);

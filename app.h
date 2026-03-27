@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #ifndef APP_H
 #define APP_H
 
@@ -24,7 +42,7 @@
 
 /* ── Constants ─────────────────────────────────────────────── */
 #define APP_NAME            "SecureDrop"
-#define APP_VERSION         "4.1.0"
+#define APP_VERSION         "5.0.0"
 #define CHUNK_SIZE          (512 * 1024)
 #define AES_KEY_LEN         32
 #define AES_IV_LEN          12
@@ -32,9 +50,13 @@
 #define MASTER_KEY_LEN      32
 #define SALT_LEN            32
 #define HASH_LEN            32
-#define RSA_KEY_BITS        2048
+#define RSA_KEY_BITS        4096
 #define SERVER_PORT         8443
-#define PBKDF2_ITERATIONS   100000
+#define PBKDF2_ITERATIONS   1000000
+#define RATE_LIMIT_MAX_FAILS  5
+#define RATE_LIMIT_LOCKOUT_SEC 60
+#define MAX_RATE_ENTRIES      256
+#define P2P_DEFAULT_PORT    9900
 #define FILE_ID_HEX_LEN     64
 #define MAX_FILES           256
 #define MAX_STORED_FILES    1024
@@ -51,14 +73,15 @@
  *   Chunks are distributed round-robin across active sub-servers.
  * ═══════════════════════════════════════════════════════════════ */
 #define SUB_PORT_BASE       10000              /* First sub-server port  */
-#define SUB_PORT_MAX        10999              /* Last sub-server port   */
-#define MAX_SUB_SERVERS     1000               /* 10000 to 10999        */
+#define SUB_PORT_MAX        10127              /* Last sub-server port   */
+#define MAX_SUB_SERVERS     128                /* 10000 to 10127         */
 
 /* ── Directories ───────────────────────────────────────────── */
 #define VAULT_DIR           "secure_vault"
 #define STORE_DIR           "chunk_store"
-#define RSA_PUB_FILE        "node_pub.pem"
-#define RSA_PRIV_FILE       "node_priv.pem"
+#define KEY_DIR             "keys"
+#define RSA_PUB_FILE        "keys/node_pub.pem"
+#define RSA_PRIV_FILE       "keys/node_priv.pem"
 #define OUTPUT_DIR          "received_files"
 #define META_DIR            "file_meta"
 #define TOR_DATA_DIR        "tor_data"
@@ -68,21 +91,25 @@
 
 /* ── Mode / Log targets ────────────────────────────────────── */
 enum {
-    MODE_SHARE   = 0,
-    MODE_RECEIVE = 1,
-    MODE_SEND    = 2,
-    MODE_VAULT   = 3,
-    MODE_SERVER  = 4
+    MODE_SHARE    = 0,
+    MODE_RECEIVE  = 1,
+    MODE_SEND     = 2,
+    MODE_VAULT    = 3,
+    MODE_SERVER   = 4,
+    MODE_P2P      = 5,
+    MODE_ADVANCED = 6
 };
 enum {
-    LOG_SHARE  = 0,
-    LOG_RECV   = 1,
-    LOG_SEND   = 2,
-    LOG_VAULT  = 3,
-    LOG_SERVER = 4
+    LOG_SHARE    = 0,
+    LOG_RECV     = 1,
+    LOG_SEND     = 2,
+    LOG_VAULT    = 3,
+    LOG_SERVER   = 4,
+    LOG_P2P      = 5,
+    LOG_ADVANCED = 6
 };
 
-/* ── Tree-view columns ─────────────────────────────────────── */
+/* ── Tree-view columns (file lists) ────────────────────────── */
 enum {
     COL_ICON = 0,
     COL_NAME,
@@ -92,6 +119,21 @@ enum {
     COL_ID,
     NUM_COLS
 };
+
+
+
+/* ── Tree-view columns ─────────────────────────────────────── */
+enum {
+    SUBCOL_INDEX = 0,
+    SUBCOL_PORT,
+    SUBCOL_ONION,
+    SUBCOL_STATUS,
+    SUBCOL_CHUNKS,
+    SUBCOL_ENABLED,
+    SUBCOL_NUM
+};
+
+
 
 /* ── Data structures ───────────────────────────────────────── */
 
@@ -168,8 +210,11 @@ typedef struct {
 /* ── Main application state ────────────────────────────────── */
 typedef struct {
     GtkWidget *window, *header_bar, *main_stack;
-    GtkWidget *mode_btns[5];
+    GtkWidget *sidebar;
+    GtkWidget *mode_btns[7];
     int        current_mode;
+    guint      server_anim_timer;
+    int        server_anim_phase;
 
     /* Share page */
     GtkWidget     *share_page, *share_file_list;
@@ -179,6 +224,7 @@ typedef struct {
     GtkWidget     *share_remove_btn, *share_clear_btn;
     GtkWidget     *share_start_btn, *share_stop_btn;
     GtkWidget     *share_status_box, *share_addr_label;
+    GtkWidget     *share_server_badge;
     GtkWidget     *share_copy_btn, *share_dl_label;
     GtkWidget     *share_progress, *share_log_view;
     GtkWidget     *share_password_entry;
@@ -211,18 +257,24 @@ typedef struct {
     GtkTextBuffer *vault_log_buf;
 
     /* Server page */
-    GtkWidget     *server_page;
+        GtkWidget     *server_page;
     GtkWidget     *server_start_btn, *server_stop_btn;
     GtkWidget     *server_files_list;
     GtkListStore  *server_files_store;
     GtkWidget     *server_log_view;
     GtkWidget     *server_subserver_entry;
     GtkWidget     *server_add_sub_btn;
-    GtkWidget     *server_batch_entry;         /* batch count   */
-    GtkWidget     *server_batch_btn;           /* batch add btn */
+    GtkWidget     *server_batch_entry;
+    GtkWidget     *server_batch_btn;
     GtkWidget     *server_stats_label;
     GtkTextBuffer *server_log_buf;
 
+    GtkWidget     *server_tor_count_entry;
+    GtkWidget     *server_tor_start_btn;
+    GtkWidget     *server_tor_stop_btn;
+    GtkWidget     *server_sub_list;
+    GtkListStore  *server_sub_store;
+    int            user_tor_count;
     /* Onion GUI */
     GtkWidget     *server_onion_label;
     GtkWidget     *server_onion_copy_btn;
@@ -232,8 +284,8 @@ typedef struct {
     /* Server daemon */
     struct MHD_Daemon *server_daemon;
     volatile int       server_running;
-    int                download_count;
-    int                upload_count;
+    volatile int       download_count;
+    volatile int       upload_count;
 
     /* Distributed storage — up to 1000 sub-servers */
     SubServer      *sub_servers;               /* heap-allocated array  */
@@ -242,8 +294,9 @@ typedef struct {
     pthread_mutex_t subserver_mutex;
 
     /* Stored files metadata */
-    StoredFileMeta  stored_files[MAX_STORED_FILES];
-    int             stored_file_count;
+    StoredFileMeta *stored_files;
+    int stored_file_count;
+    int stored_files_cap;
     pthread_mutex_t stored_mutex;
 
     /* Tor circuits */
@@ -259,6 +312,28 @@ typedef struct {
 
     /* Onion service */
     OnionService    onion;
+
+    /* P2P page */
+    GtkWidget     *p2p_page;
+    GtkWidget     *p2p_send_file_btn, *p2p_send_password_entry;
+    GtkWidget     *p2p_send_subs_entry;          /* NEW: number of sub-servers */
+    GtkWidget     *p2p_start_btn, *p2p_stop_btn;
+    GtkWidget     *p2p_send_status_label;
+    GtkWidget     *p2p_recv_addr_entry, *p2p_recv_password_entry;
+    GtkWidget     *p2p_recv_btn;
+    GtkWidget     *p2p_progress, *p2p_log_view;
+    GtkTextBuffer *p2p_log_buf;
+
+    /* Advanced page */
+    GtkWidget     *adv_page;
+    GtkWidget     *adv_chunks_per_sub_entry;
+    GtkWidget     *adv_retry_timeout_entry;
+    GtkWidget     *adv_max_retries_entry;
+    GtkWidget     *adv_thread_count_entry;
+    GtkWidget     *adv_warmup_stagger_entry;
+    GtkWidget     *adv_apply_btn, *adv_reset_btn;
+    GtkWidget     *adv_log_view;
+    GtkTextBuffer *adv_log_buf;
 
     GtkCssProvider *css;
 } App;

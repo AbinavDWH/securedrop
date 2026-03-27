@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "gui_page_vault.h"
 #include "gui_helpers.h"
 #include "crypto.h"
@@ -175,27 +193,22 @@ static void on_delete(GtkButton *b, gpointer u)
 GtkWidget *gui_build_vault_page(void)
 {
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(page), 14);
+    gtk_container_set_border_width(GTK_CONTAINER(page), 20);
 
     /* Header */
-    GtkWidget *hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_pack_start(GTK_BOX(hdr),
-        gtk_image_new_from_icon_name(
-            "security-high", GTK_ICON_SIZE_DND),
-        FALSE, FALSE, 0);
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
                          "<b>Secure Vault</b>");
     gtk_style_context_add_class(
         gtk_widget_get_style_context(title), "sec-title");
-    gtk_box_pack_start(GTK_BOX(hdr), title, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(page), hdr, FALSE, FALSE, 0);
+    gtk_widget_set_halign(title, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(page), title, FALSE, FALSE, 0);
 
     GtkWidget *sub = gtk_label_new(
         "AES-256-GCM encrypted local storage with "
         "RSA-wrapped keys");
     gtk_style_context_add_class(
-        gtk_widget_get_style_context(sub), "dim-text");
+        gtk_widget_get_style_context(sub), "page-subtitle");
     gtk_widget_set_halign(sub, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(page), sub, FALSE, FALSE, 0);
 

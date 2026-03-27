@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "crypto.h"
 #include "util.h"
 
@@ -10,6 +28,7 @@
 #include <openssl/crypto.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#include <fcntl.h>
 
 /* ── Error logging ─────────────────────────────────────────── */
 
@@ -54,7 +73,7 @@ int derive_chunk_key(const unsigned char *master, size_t mlen,
     if (!kctx) return -1;
 
     uint32_t idx_be = htonl(chunk_idx);
-    char salt_str[] = "securedrop-chunk-v4";
+    char salt_str[] = "securedrop-chunk-v5";
 
     OSSL_PARAM params[] = {
         OSSL_PARAM_construct_utf8_string("digest",
@@ -269,7 +288,7 @@ end:
     return ret;
 }
 
-/* ── RSA-2048 key generation to PEM buffers ────────────────── */
+/* ── RSA-4096 key generation to PEM buffers ────────────────── */
 
 int gen_rsa_keys_to_pem(unsigned char *pub_pem, size_t *pub_len,
                         unsigned char *priv_pem, size_t *priv_len)
@@ -340,17 +359,28 @@ int gen_rsa_keys_to_file(const char *pub_file, const char *priv_file)
     if (EVP_PKEY_keygen(ctx, &pk) <= 0) goto done;
 
     {
-        FILE *fp = fopen(priv_file, "w");
-        if (!fp) goto done;
-        PEM_write_PrivateKey(fp, pk, NULL, NULL, 0, NULL, NULL);
+        int fd = open(priv_file, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd < 0) goto done;
+        FILE *fp = fdopen(fd, "w");
+        if (!fp) {
+            close(fd);
+            goto done;
+        }
+        if (PEM_write_PrivateKey(fp, pk, NULL, NULL, 0, NULL, NULL) != 1) {
+            fclose(fp);
+            goto done;
+        }
         fclose(fp);
-        chmod(priv_file, 0600);
     }
     {
         FILE *fp = fopen(pub_file, "w");
         if (!fp) goto done;
-        PEM_write_PUBKEY(fp, pk);
+        if (PEM_write_PUBKEY(fp, pk) != 1) {
+            fclose(fp);
+            goto done;
+        }
         fclose(fp);
+        chmod(pub_file, 0644);
     }
     ret = 0;
 
@@ -601,57 +631,98 @@ int vault_encrypt_file(const char *src, const char *dst)
     if (secure_random(iv, AES_IV_LEN) != 0) return -1;
 
     FILE *fin = fopen(src, "rb");
-    FILE *fout = fopen(dst, "wb");
-    if (!fin || !fout) {
-        if (fin) fclose(fin);
-        if (fout) fclose(fout);
+    if (!fin) {
+        secure_wipe(key, AES_KEY_LEN);
         return -1;
     }
 
-    /* Write IV */
-    fwrite(iv, 1, AES_IV_LEN, fout);
+    fseek(fin, 0, SEEK_END);
+    long file_size = ftell(fin);
+    fseek(fin, 0, SEEK_SET);
 
-    /* RSA-wrap the AES key */
+    if (file_size < 0 || file_size > 256L * 1024 * 1024) {
+        fclose(fin);
+        secure_wipe(key, AES_KEY_LEN);
+        return -1;
+    }
+
     unsigned char *ekey = NULL;
     size_t eklen = 0;
-    if (rsa_encrypt_file(RSA_PUB_FILE, key, AES_KEY_LEN,
-                         &ekey, &eklen) != 0) {
+    if (rsa_encrypt_file(RSA_PUB_FILE, key, AES_KEY_LEN, &ekey, &eklen) != 0) {
         secure_wipe(key, AES_KEY_LEN);
-        fclose(fin); fclose(fout);
+        fclose(fin);
         return -1;
     }
-    uint32_t ekl32 = htonl((uint32_t)eklen);
-    fwrite(&ekl32, 4, 1, fout);
-    fwrite(ekey, 1, eklen, fout);
-    OPENSSL_free(ekey);
 
-    /* Encrypt file content */
+    FILE *fout = fopen(dst, "wb");
+    if (!fout) {
+        secure_wipe(key, AES_KEY_LEN);
+        OPENSSL_free(ekey);
+        fclose(fin);
+        return -1;
+    }
+
+    int ret = -1;
+
+    if (fwrite(iv, 1, AES_IV_LEN, fout) != AES_IV_LEN)
+        goto fail;
+
+    uint32_t ekl32 = htonl((uint32_t)eklen);
+    if (fwrite(&ekl32, 4, 1, fout) != 1)
+        goto fail;
+    if (fwrite(ekey, 1, eklen, fout) != eklen)
+        goto fail;
+
+    OPENSSL_free(ekey);
+    ekey = NULL;
+
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
-                        AES_IV_LEN, NULL);
-    EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv);
+    if (!ctx)
+        goto fail;
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1)
+        goto fail_ctx;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, AES_IV_LEN, NULL) != 1)
+        goto fail_ctx;
+    if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv) != 1)
+        goto fail_ctx;
+
     secure_wipe(key, AES_KEY_LEN);
 
     unsigned char inbuf[8192], outbuf[8192 + 128];
     int outl;
     size_t nr;
     while ((nr = fread(inbuf, 1, sizeof(inbuf), fin)) > 0) {
-        EVP_EncryptUpdate(ctx, outbuf, &outl, inbuf, (int)nr);
-        fwrite(outbuf, 1, (size_t)outl, fout);
+        if (EVP_EncryptUpdate(ctx, outbuf, &outl, inbuf, (int)nr) != 1)
+            goto fail_ctx;
+        if (fwrite(outbuf, 1, (size_t)outl, fout) != (size_t)outl)
+            goto fail_ctx;
     }
 
-    EVP_EncryptFinal_ex(ctx, outbuf, &outl);
-    fwrite(outbuf, 1, (size_t)outl, fout);
+    if (EVP_EncryptFinal_ex(ctx, outbuf, &outl) != 1)
+        goto fail_ctx;
+    if (fwrite(outbuf, 1, (size_t)outl, fout) != (size_t)outl)
+        goto fail_ctx;
 
     unsigned char tag[AES_TAG_LEN];
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_TAG_LEN, tag);
-    fwrite(tag, 1, AES_TAG_LEN, fout);
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_TAG_LEN, tag) != 1)
+        goto fail_ctx;
+    if (fwrite(tag, 1, AES_TAG_LEN, fout) != AES_TAG_LEN)
+        goto fail_ctx;
 
+    ret = 0;
+
+fail_ctx:
     EVP_CIPHER_CTX_free(ctx);
+fail:
+    if (ekey)
+        OPENSSL_free(ekey);
+    secure_wipe(key, AES_KEY_LEN);
     fclose(fin);
     fclose(fout);
-    return 0;
+    if (ret != 0)
+        unlink(dst);
+    return ret;
 }
 
 int vault_decrypt_file(const char *src, const char *dst)
@@ -659,83 +730,162 @@ int vault_decrypt_file(const char *src, const char *dst)
     FILE *fin = fopen(src, "rb");
     if (!fin) return -1;
 
-    /* Read IV */
     unsigned char iv[AES_IV_LEN];
     if (fread(iv, 1, AES_IV_LEN, fin) != AES_IV_LEN) {
-        fclose(fin); return -1;
+        fclose(fin);
+        return -1;
     }
 
-    /* Read encrypted key length + data */
     uint32_t ekl32;
-    if (fread(&ekl32, 4, 1, fin) != 1) { fclose(fin); return -1; }
+    if (fread(&ekl32, 4, 1, fin) != 1) {
+        fclose(fin);
+        return -1;
+    }
     uint32_t eklen = ntohl(ekl32);
 
-    unsigned char *ekey = malloc(eklen);
-    if (fread(ekey, 1, eklen, fin) != eklen) {
-        free(ekey); fclose(fin); return -1;
+    if (eklen > 8192) {
+        fclose(fin);
+        return -1;
     }
 
-    /* RSA-unwrap the AES key */
+    unsigned char *ekey = malloc(eklen);
+    if (!ekey) {
+        fclose(fin);
+        return -1;
+    }
+    if (fread(ekey, 1, eklen, fin) != eklen) {
+        free(ekey);
+        fclose(fin);
+        return -1;
+    }
+
     unsigned char *key = NULL;
     size_t klen = 0;
-    if (rsa_decrypt_file(RSA_PRIV_FILE, ekey, eklen,
-                         &key, &klen) != 0) {
-        free(ekey); fclose(fin); return -1;
+    if (rsa_decrypt_file(RSA_PRIV_FILE, ekey, eklen, &key, &klen) != 0) {
+        free(ekey);
+        fclose(fin);
+        return -1;
     }
     free(ekey);
 
-    /* Determine ciphertext length (exclude trailing tag) */
     long cur = ftell(fin);
+    if (cur < 0) {
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        fclose(fin);
+        return -1;
+    }
     fseek(fin, 0, SEEK_END);
     long end = ftell(fin);
     fseek(fin, cur, SEEK_SET);
     long ct_len = end - cur - AES_TAG_LEN;
 
-    FILE *fout = fopen(dst, "wb");
-    if (!fout) {
-        secure_wipe(key, klen); OPENSSL_free(key);
-        fclose(fin); return -1;
+    if (ct_len < 0 || ct_len > 256L * 1024 * 1024) {
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        fclose(fin);
+        return -1;
+    }
+
+    unsigned char *ct_data = malloc((size_t)ct_len);
+    if (!ct_data) {
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        fclose(fin);
+        return -1;
+    }
+
+    if ((long)fread(ct_data, 1, (size_t)ct_len, fin) != ct_len) {
+        free(ct_data);
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        fclose(fin);
+        return -1;
+    }
+
+    unsigned char tag[AES_TAG_LEN];
+    if (fread(tag, 1, AES_TAG_LEN, fin) != AES_TAG_LEN) {
+        free(ct_data);
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        fclose(fin);
+        return -1;
+    }
+    fclose(fin);
+
+    unsigned char *pt_data = malloc((size_t)ct_len + 128);
+    if (!pt_data) {
+        free(ct_data);
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        return -1;
     }
 
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
-                        AES_IV_LEN, NULL);
-    EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv);
+    if (!ctx) {
+        free(pt_data);
+        free(ct_data);
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+        return -1;
+    }
+
+    int ret = -1;
+    int outl = 0, tmpl = 0;
+    size_t pt_total = 0;
+
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1)
+        goto cleanup;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, AES_IV_LEN, NULL) != 1)
+        goto cleanup;
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv) != 1)
+        goto cleanup;
+
     secure_wipe(key, klen);
     OPENSSL_free(key);
+    key = NULL;
 
-    unsigned char inbuf[8192], outbuf[8192 + 128];
-    int outl;
-    long read_total = 0;
+    if (EVP_DecryptUpdate(ctx, pt_data, &outl, ct_data, (int)ct_len) != 1)
+        goto cleanup;
+    pt_total = (size_t)outl;
 
-    while (read_total < ct_len) {
-        size_t toread = (size_t)(ct_len - read_total);
-        if (toread > sizeof(inbuf)) toread = sizeof(inbuf);
-        size_t nr = fread(inbuf, 1, toread, fin);
-        if (nr == 0) break;
-        EVP_DecryptUpdate(ctx, outbuf, &outl, inbuf, (int)nr);
-        fwrite(outbuf, 1, (size_t)outl, fout);
-        read_total += (long)nr;
+    free(ct_data);
+    ct_data = NULL;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_TAG_LEN, tag) != 1)
+        goto cleanup;
+
+    if (EVP_DecryptFinal_ex(ctx, pt_data + pt_total, &tmpl) != 1)
+        goto cleanup;
+    pt_total += (size_t)tmpl;
+
+    {
+        FILE *fout = fopen(dst, "wb");
+        if (!fout)
+            goto cleanup;
+        if (fwrite(pt_data, 1, pt_total, fout) != pt_total) {
+            fclose(fout);
+            unlink(dst);
+            goto cleanup;
+        }
+        fclose(fout);
     }
 
-    /* Read and set tag */
-    unsigned char tag[AES_TAG_LEN];
-    fread(tag, 1, AES_TAG_LEN, fin);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG,
-                        AES_TAG_LEN, tag);
+    ret = 0;
 
-    int rc = EVP_DecryptFinal_ex(ctx, outbuf, &outl);
-    if (rc > 0)
-        fwrite(outbuf, 1, (size_t)outl, fout);
-
+cleanup:
     EVP_CIPHER_CTX_free(ctx);
-    fclose(fin);
-    fclose(fout);
-
-    if (rc <= 0) {
-        unlink(dst);
-        return -1;   /* integrity failure */
+    if (pt_data) {
+        secure_wipe(pt_data, (size_t)ct_len + 128);
+        free(pt_data);
     }
-    return 0;
+    if (ct_data)
+        free(ct_data);
+    if (key) {
+        secure_wipe(key, klen);
+        OPENSSL_free(key);
+    }
+    if (ret != 0)
+        unlink(dst);
+    return ret;
 }

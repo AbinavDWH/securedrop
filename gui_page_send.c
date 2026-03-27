@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "gui_page_send.h"
 #include "gui_helpers.h"
 #include "client.h"
@@ -69,27 +87,22 @@ static void on_scan_circuits(GtkButton *b, gpointer u)
 GtkWidget *gui_build_send_page(void)
 {
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(page), 14);
+    gtk_container_set_border_width(GTK_CONTAINER(page), 20);
 
     /* Header */
-    GtkWidget *hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_pack_start(GTK_BOX(hdr),
-        gtk_image_new_from_icon_name(
-            "mail-send", GTK_ICON_SIZE_DND),
-        FALSE, FALSE, 0);
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
                          "<b>Send File</b>");
     gtk_style_context_add_class(
         gtk_widget_get_style_context(title), "sec-title");
-    gtk_box_pack_start(GTK_BOX(hdr), title, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(page), hdr, FALSE, FALSE, 0);
+    gtk_widget_set_halign(title, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(page), title, FALSE, FALSE, 0);
 
     GtkWidget *sub = gtk_label_new(
         "Encrypt locally and upload to server via Tor. "
         "Set a password for the receiver.");
     gtk_style_context_add_class(
-        gtk_widget_get_style_context(sub), "dim-text");
+        gtk_widget_get_style_context(sub), "page-subtitle");
     gtk_widget_set_halign(sub, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(page), sub, FALSE, FALSE, 0);
 
@@ -171,7 +184,7 @@ GtkWidget *gui_build_send_page(void)
 
     /* Send button */
     app.send_btn = mkbtn(
-        "\xF0\x9F\x94\x92  Encrypt & Upload", "act-btn");
+        "Encrypt & Upload", "act-btn");
     g_signal_connect(app.send_btn, "clicked",
                      G_CALLBACK(on_send), NULL);
     gtk_widget_set_halign(app.send_btn, GTK_ALIGN_START);

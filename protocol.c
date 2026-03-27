@@ -1,3 +1,21 @@
+/*
+ * SecureDrop — Encrypted File Sharing over Tor
+ * Copyright (C) 2026  Abinav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "protocol.h"
 #include "storage.h"
 #include "gui_helpers.h"
@@ -86,7 +104,7 @@ int protocol_build_upload(const char *filepath,
     if (password_make_verifier(pwd_key, pwd_verify) != 0)
         goto cleanup;
 
-    gui_post_log(log_target, "Generating RSA-2048 keypair...");
+    gui_post_log(log_target, "Generating RSA-4096 keypair...");
     if (gen_rsa_keys_to_pem(rsa_pub, &rsa_pub_len,
                             rsa_priv, &rsa_priv_len) != 0) {
         gui_post_log(log_target, "RSA keygen failed");
@@ -252,7 +270,8 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
                  file_id_out);
 
     pthread_mutex_lock(&app.stored_mutex);
-    if (app.stored_file_count >= MAX_STORED_FILES) {
+        if (app.stored_file_count >= MAX_STORED_FILES ||
+        ensure_stored_capacity() != 0) {
         pthread_mutex_unlock(&app.stored_mutex);
         gui_post_log(log_target, "Storage full");
         return -1;
@@ -317,6 +336,8 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
 
     for (char *x = meta->original_name; *x; x++)
         if (*x == '/' || *x == '\\') *x = '_';
+    if (meta->original_name[0] == '.')
+        meta->original_name[0] = '_';
 
     if (p + 8 > len) goto fail_unlock;
     meta->original_size = (size_t)rd64(d + p);
@@ -330,17 +351,15 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
 
     meta->upload_time = time(NULL);
 
-    char sz_str[64];
-    human_size(meta->original_size, sz_str, sizeof(sz_str));
-    gui_post_log(log_target, "Storing: %s (%s, %u chunks)",
-                 meta->original_name, sz_str,
-                 meta->chunk_count);
+    uint32_t cc = meta->chunk_count;
+    int stored_idx = app.stored_file_count;
 
     pthread_mutex_unlock(&app.stored_mutex);
 
-    /* ── Parse all chunk positions ─────────────────────────── */
-
-    uint32_t cc = meta->chunk_count;
+    char sz_str[64];
+    human_size(meta->original_size, sz_str, sizeof(sz_str));
+    gui_post_log(log_target, "Storing: %s (%s, %u chunks)",
+                 meta->original_name, sz_str, cc);
 
     const unsigned char **chunk_ptrs =
         calloc(cc, sizeof(unsigned char *));
@@ -362,6 +381,8 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
         if (p + 4 > len) goto fail_chunks;
         uint32_t ctlen = rd32(d + p); p += 4;
 
+        if (ctlen > CHUNK_SIZE + 256) goto fail_chunks;
+
         size_t chunk_total = AES_IV_LEN + AES_TAG_LEN + ctlen;
         if (p + chunk_total > len) goto fail_chunks;
 
@@ -375,8 +396,6 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
     gui_post_log(log_target,
         "Parsed %u chunks, distributing in parallel...", cc);
 
-    /* ── Store all chunks in parallel ──────────────────────── */
-
     int *locations = calloc(cc, sizeof(int));
     if (!locations) goto fail_chunks;
 
@@ -386,19 +405,25 @@ int protocol_parse_upload(const unsigned char *d, size_t len,
         locations, log_target);
 
     pthread_mutex_lock(&app.stored_mutex);
-    for (uint32_t i = 0; i < cc; i++)
-        meta->chunk_locations[i] = locations[i];
+    if (stored_idx < MAX_STORED_FILES) {
+        StoredFileMeta *final_meta = &app.stored_files[stored_idx];
+        for (uint32_t i = 0; i < cc; i++)
+            final_meta->chunk_locations[i] = locations[i];
 
-    meta->distributed = (app.num_sub_servers > 0) ? 1 : 0;
-    app.stored_file_count++;
-    app.upload_count++;
+        final_meta->distributed = (app.num_sub_servers > 0) ? 1 : 0;
+        app.stored_file_count++;
+        app.upload_count++;
+    }
+
+    StoredFileMeta meta_copy;
+    memcpy(&meta_copy, &app.stored_files[stored_idx], sizeof(meta_copy));
     pthread_mutex_unlock(&app.stored_mutex);
 
     free(chunk_ptrs);
     free(chunk_lens);
     free(locations);
 
-    storage_save_meta(meta, log_target);
+    storage_save_meta(&meta_copy, log_target);
 
     if (rc != 0)
         gui_post_log(log_target,
@@ -578,7 +603,6 @@ int protocol_build_download(const char *file_id,
     human_size(response->len, sz, sizeof(sz));
     gui_post_log(log_target,
         "Download response: %s (%.1fs)", sz, elapsed);
-    app.download_count++;
 
     return 0;
 }
@@ -633,15 +657,27 @@ int protocol_parse_download(const unsigned char *d, size_t len,
 
     /* Verify password */
     if (password_check_verifier(pwd_key, verify) != 0) {
-        gui_post_log(log_target, "WRONG PASSWORD");
-        goto cleanup;
+        unsigned char pwd_key_legacy[AES_KEY_LEN];
+        if (PKCS5_PBKDF2_HMAC(password, (int)strlen(password),
+                               salt, SALT_LEN, 100000,
+                               EVP_sha256(), AES_KEY_LEN,
+                               pwd_key_legacy) == 1 &&
+            password_check_verifier(pwd_key_legacy, verify) == 0) {
+            memcpy(pwd_key, pwd_key_legacy, AES_KEY_LEN);
+            secure_wipe(pwd_key_legacy, AES_KEY_LEN);
+            gui_post_log(log_target, "Password verified (legacy iterations)");
+        } else {
+            secure_wipe(pwd_key_legacy, AES_KEY_LEN);
+            gui_post_log(log_target, "WRONG PASSWORD");
+            goto cleanup;
+        }
     }
     gui_post_log(log_target, "Password verified");
 
     /* RSA public key (skip) */
     if (p + 4 > len) goto cleanup;
     uint32_t pub_len = rd32(d + p); p += 4;
-    if (p + pub_len > len) goto cleanup;
+    if (pub_len > 8192 || p + pub_len > len) goto cleanup;
     p += pub_len;
 
     /* Encrypted RSA private key */
@@ -653,7 +689,7 @@ int protocol_parse_download(const unsigned char *d, size_t len,
 
     if (p + 4 > len) goto cleanup;
     uint32_t erp_len = rd32(d + p); p += 4;
-    if (p + erp_len > len) goto cleanup;
+    if (erp_len > 16384 || p + erp_len > len) goto cleanup;
     const unsigned char *enc_rsa = d + p; p += erp_len;
 
     /* Decrypt RSA private key */
@@ -672,7 +708,7 @@ int protocol_parse_download(const unsigned char *d, size_t len,
     /* Encrypted master key */
     if (p + 4 > len) goto cleanup;
     uint32_t emk_len = rd32(d + p); p += 4;
-    if (p + emk_len > len) goto cleanup;
+    if (emk_len > 1024 || p + emk_len > len) goto cleanup;
     const unsigned char *enc_mk = d + p; p += emk_len;
 
     /* Decrypt master key */
@@ -710,8 +746,18 @@ int protocol_parse_download(const unsigned char *d, size_t len,
     filename[fnl] = '\0';
     p += fnl;
 
-    for (char *x = filename; *x; x++)
-        if (*x == '/' || *x == '\\') *x = '_';
+        for (char *x = filename; *x; x++) {
+        if (*x == '/' || *x == '\\' || *x == '\0')
+            *x = '_';
+    }
+
+    if (filename[0] == '.')
+        filename[0] = '_';
+
+    if (fnl == 0) {
+        strcpy(filename, "unnamed_file");
+        fnl = 12;
+    }
 
     /* File size */
     if (p + 8 > len) {
@@ -727,6 +773,11 @@ int protocol_parse_download(const unsigned char *d, size_t len,
     }
     uint32_t chunk_count = rd32(d + p); p += 4;
 
+    if (chunk_count > MAX_CHUNKS) {
+        gui_post_log(log_target, "Chunk count too large: %u", chunk_count);
+        secure_wipe(mk_buf, mk_buf_len);
+        goto cleanup;
+    }
     char sz[64];
     human_size((size_t)file_size, sz, sizeof(sz));
     gui_post_log(log_target,
@@ -749,7 +800,15 @@ int protocol_parse_download(const unsigned char *d, size_t len,
 
     /* Pre-allocate file on disk */
     if (file_size > 0) {
-        ftruncate(fileno(ofp), (off_t)file_size);
+        if (ftruncate(fileno(ofp), (off_t)file_size) != 0) {
+            gui_post_log(log_target,
+                "Failed to pre-allocate file: %s", strerror(errno));
+            fclose(ofp);
+            ofp = NULL;
+            unlink(outpath);
+            secure_wipe(mk_buf, mk_buf_len);
+            goto cleanup;
+        }
         fseek(ofp, 0, SEEK_SET);
     }
 
@@ -782,6 +841,8 @@ int protocol_parse_download(const unsigned char *d, size_t len,
 
         if (p + 4 > len) goto fail_file;
         uint32_t ctlen = rd32(d + p); p += 4;
+
+        if (ctlen > CHUNK_SIZE + 256) goto fail_file;
 
         if (p + AES_IV_LEN > len) goto fail_file;
         const unsigned char *iv = d + p;
@@ -969,7 +1030,8 @@ int protocol_parse_upload_metadata(
         file_id_out);
 
     pthread_mutex_lock(&app.stored_mutex);
-    if (app.stored_file_count >= MAX_STORED_FILES) {
+        if (app.stored_file_count >= MAX_STORED_FILES ||
+        ensure_stored_capacity() != 0) {
         pthread_mutex_unlock(&app.stored_mutex);
         gui_post_log(log_target, "Storage full");
         return -1;
@@ -1065,17 +1127,20 @@ int protocol_parse_upload_metadata(
 
     app.stored_file_count++;
     app.upload_count++;
+
+    StoredFileMeta meta_copy;
+    memcpy(&meta_copy, meta, sizeof(meta_copy));
     pthread_mutex_unlock(&app.stored_mutex);
 
-    storage_save_meta(meta, log_target);
+    storage_save_meta(&meta_copy, log_target);
 
     char sz[64];
-    human_size(meta->original_size, sz, sizeof(sz));
+    human_size(meta_copy.original_size, sz, sizeof(sz));
     gui_post_log(log_target,
         "\xE2\x9C\x93 Parallel metadata stored: "
         "%s [%s] %u chunks (ID: %.16s...)",
-        meta->original_name, sz,
-        meta->chunk_count, file_id_out);
+        meta_copy.original_name, sz,
+        meta_copy.chunk_count, file_id_out);
 
     return 0;
 
