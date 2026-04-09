@@ -4,7 +4,6 @@
 
 Veil-Xfer is a privacy-focused file transfer application that enables anonymous, end-to-end encrypted file sharing through the Tor network. Built with a GTK3 graphical interface, it provides multiple transfer modes — server hosting, direct send, peer-to-peer — all routed through Tor onion services for maximum anonymity.
 
-> **Note**: This is **not** the official [Veil-Xfer](https://Veil-Xfer.org) project by Freedom of the Press Foundation. This is an independent, unaffiliated project that happens to share the same name.
 
 ---
 
