@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -154,7 +154,7 @@ void gui_build(void)
     gtk_box_pack_start(GTK_BOX(brand_box),
         brand_icon, FALSE, FALSE, 0);
 
-    GtkWidget *brand_title = gtk_label_new("SecureDrop");
+    GtkWidget *brand_title = gtk_label_new("Veil-Xfer");
     gtk_style_context_add_class(
         gtk_widget_get_style_context(brand_title),
         "sidebar-brand-title");

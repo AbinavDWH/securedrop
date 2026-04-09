@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -94,7 +94,7 @@ static int write_torrc(int main_port,
 
     /* Basic config */
     fprintf(fp,
-        "# SecureDrop auto-generated torrc\n"
+        "# Veil-Xfer auto-generated torrc\n"
         "SocksPort 0\n"
         "DataDirectory %s\n"
         "HiddenServiceDir %s\n",

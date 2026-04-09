@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -73,7 +73,7 @@ int derive_chunk_key(const unsigned char *master, size_t mlen,
     if (!kctx) return -1;
 
     uint32_t idx_be = htonl(chunk_idx);
-    char salt_str[] = "securedrop-chunk-v5";
+    char salt_str[] = "Veil-Xfer-chunk-v5";
 
     OSSL_PARAM params[] = {
         OSSL_PARAM_construct_utf8_string("digest",
@@ -567,7 +567,7 @@ int password_make_verifier(const unsigned char *derived_key,
                            unsigned char *verifier_out)
 {
     unsigned int md_len = 0;
-    const char *label = "securedrop-password-verify-v4";
+    const char *label = "Veil-Xfer-password-verify-v4";
     unsigned char *result = HMAC(EVP_sha256(),
                                  derived_key, HASH_LEN,
                                  (unsigned char *)label,

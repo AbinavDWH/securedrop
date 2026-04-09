@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SecureDrop — Encrypted File Sharing over Tor
+# Veil-Xfer — Encrypted File Sharing over Tor
 # Copyright (C) 2026  Abinav
 #
 # This program is free software: you can redistribute it and/or modify
@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # ══════════════════════════════════════════════════════════════
-# SecureDrop v4.0 — Dependency Installer
+# Veil-Xfer v4.0 — Dependency Installer
 # Supports: Debian, Ubuntu, Mint, Pop!_OS
 # ══════════════════════════════════════════════════════════════
 
@@ -31,7 +31,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔══════════════════════════════════════╗"
-echo "║  SecureDrop v5.0 — Setup             ║"
+echo "║  Veil-Xfer v4.0 — Setup             ║"
 echo "╚══════════════════════════════════════╝"
 echo -e "${NC}"
 

@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify

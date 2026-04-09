@@ -1,4 +1,4 @@
-# SecureDrop — Encrypted File Sharing over Tor
+# Veil-Xfer — Encrypted File Sharing over Tor
 # Copyright (C) 2026  Abinav
 #
 # This program is free software: you can redistribute it and/or modify
@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # ══════════════════════════════════════════════════════════════
-# SecureDrop v5.0 — Build System
+# Veil-Xfer v5.0 — Build System
 # ══════════════════════════════════════════════════════════════
 
 CC       = gcc
@@ -74,8 +74,8 @@ SRCS = main.c \
        gui_page_advanced.c
 
 OBJS     = $(SRCS:.c=.o)
-TARGET   = securedrop
-RELEASE  = securedrop.bin
+TARGET   = Veil-Xfer
+RELEASE  = Veil-Xfer.bin
 
 # ── Directories ────────────────────────────────────────────────
 VAULT_DIR   = secure_vault
@@ -195,7 +195,7 @@ purge: distclean
 # ── Help ───────────────────────────────────────────────────────
 help:
 	@echo ""
-	@echo "SecureDrop v4.0 — Build Targets"
+	@echo "Veil-Xfer v4.0 — Build Targets"
 	@echo "═══════════════════════════════════════════"
 	@echo ""
 	@echo "  make              Build the application"

@@ -1,10 +1,10 @@
-# SecureDrop
+# Veil-Xfer
 
 **Encrypted file sharing over Tor hidden services.**
 
-SecureDrop is a privacy-focused file transfer application that enables anonymous, end-to-end encrypted file sharing through the Tor network. Built with a GTK3 graphical interface, it provides multiple transfer modes — server hosting, direct send, peer-to-peer — all routed through Tor onion services for maximum anonymity.
+Veil-Xfer is a privacy-focused file transfer application that enables anonymous, end-to-end encrypted file sharing through the Tor network. Built with a GTK3 graphical interface, it provides multiple transfer modes — server hosting, direct send, peer-to-peer — all routed through Tor onion services for maximum anonymity.
 
-> **Note**: This is **not** the official [SecureDrop](https://securedrop.org) project by Freedom of the Press Foundation. This is an independent, unaffiliated project that happens to share the same name.
+> **Note**: This is **not** the official [Veil-Xfer](https://Veil-Xfer.org) project by Freedom of the Press Foundation. This is an independent, unaffiliated project that happens to share the same name.
 
 ---
 
@@ -26,7 +26,7 @@ SecureDrop is a privacy-focused file transfer application that enables anonymous
 | Mode | Description |
 |------|-------------|
 | **Share** | Host files on an onion server for others to download |
-| **Receive** | Download files from a remote SecureDrop server |
+| **Receive** | Download files from a remote Veil-Xfer server |
 | **Send** | Push a file directly to a remote server |
 | **P2P** | Peer-to-peer transfer with no central server |
 | **Server** | Full server mode with distributed chunk storage |
@@ -85,7 +85,7 @@ make run
 
 ```bash
 make release
-# Output: securedrop.bin (stripped, hardened)
+# Output: Veil-Xfer.bin (stripped, hardened)
 ```
 
 ---
@@ -108,7 +108,7 @@ make release
 ## Project Structure
 
 ```
-securedrop/
+Veil-Xfer/
 ├── main.c                  # Entry point, initialization, cleanup
 ├── app.h                   # Global state, constants, data structures
 ├── gui.c/h                 # Main GTK3 window, sidebar, navigation

@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -47,7 +47,7 @@ App app;
 static void signal_handler(int sig)
 {
     (void)sig;
-    fprintf(stderr, "\n[SecureDrop] Shutting down...\n");
+    fprintf(stderr, "\n[Veil-Xfer] Shutting down...\n");
     gtk_main_quit();
 }
 
@@ -94,7 +94,7 @@ int main(int argc, char *argv[])
     fprintf(stderr,
         "\n"
         "╔══════════════════════════════════════════╗\n"
-        "║  SecureDrop v" APP_VERSION
+        "║  Veil-Xfer v" APP_VERSION
                   " — Encrypted Transfer  ║\n"
         "╠══════════════════════════════════════════╣\n"
         "║  AES-256-GCM  chunk encryption           ║\n"
@@ -147,7 +147,7 @@ int main(int argc, char *argv[])
     /* ══════════════════════════════════════════════════════════
      * CLEANUP — Order matters!
      * ══════════════════════════════════════════════════════════ */
-    fprintf(stderr, "[SecureDrop] Cleaning up...\n");
+    fprintf(stderr, "[Veil-Xfer] Cleaning up...\n");
 
     /* 0. Stop P2P sender (kills P2P Tor processes + sub-servers) */
     if (p2p_is_running())
@@ -177,6 +177,6 @@ int main(int argc, char *argv[])
     /* 5. Cleanup curl */
     curl_global_cleanup();
 
-    fprintf(stderr, "[SecureDrop] Goodbye.\n");
+    fprintf(stderr, "[Veil-Xfer] Goodbye.\n");
     return 0;
 }

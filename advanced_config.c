@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -65,12 +65,12 @@ int adv_config_clamp(int val, int lo, int hi)
  * CONFIG FILE PATH
  * ══════════════════════════════════════════════════════════════ */
 
-#define CONFIG_DIR_NAME   "securedrop"
+#define CONFIG_DIR_NAME   "Veil-Xfer"
 #define CONFIG_FILE_NAME  "advanced.conf"
 #define MAX_PATH_LEN      512
 #define MAX_LINE_LEN      256
 
-/* Build config file path: ~/.config/securedrop/advanced.conf
+/* Build config file path: ~/.config/Veil-Xfer/advanced.conf
    Returns 0 on success, -1 on failure. */
 static int config_path(char *out, size_t outsz)
 {
@@ -104,7 +104,7 @@ static int ensure_config_dir(void)
     snprintf(dir, sizeof(dir), "%s/.config", home);
     mkdir(dir, 0755);
 
-    /* ~/.config/securedrop */
+    /* ~/.config/Veil-Xfer */
     snprintf(dir, sizeof(dir),
         "%s/.config/%s", home, CONFIG_DIR_NAME);
     mkdir(dir, 0700);
@@ -128,7 +128,7 @@ int adv_config_save(void)
     FILE *f = fopen(path, "w");
     if (!f) return -1;
 
-    fprintf(f, "# SecureDrop Advanced Configuration\n");
+    fprintf(f, "# Veil-Xfer Advanced Configuration\n");
     fprintf(f, "# Auto-generated — edit with care\n\n");
     fprintf(f, "chunks_per_sub=%d\n",
         adv_config.chunks_per_sub);

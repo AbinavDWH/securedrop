@@ -1,5 +1,5 @@
 /*
- * SecureDrop — Encrypted File Sharing over Tor
+ * Veil-Xfer — Encrypted File Sharing over Tor
  * Copyright (C) 2026  Abinav
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@
  *
  * All fields have sensible defaults. The Advanced GUI page
  * lets the user tweak these; validation ensures no bad values.
- * Settings persist to ~/.config/securedrop/advanced.conf
+ * Settings persist to ~/.config/Veil-Xfer/advanced.conf
  * ══════════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -44,7 +44,7 @@ void adv_config_reset(void);
 /* Clamp a single value to [lo, hi]; returns clamped value */
 int adv_config_clamp(int val, int lo, int hi);
 
-/* Save current config to ~/.config/securedrop/advanced.conf */
+/* Save current config to ~/.config/Veil-Xfer/advanced.conf */
 int adv_config_save(void);
 
 /* Load config from file (call before gui_build) */

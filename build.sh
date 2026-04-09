@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SecureDrop — Encrypted File Sharing over Tor
+# Veil-Xfer — Encrypted File Sharing over Tor
 # Copyright (C) 2026  Abinav
 #
 # This program is free software: you can redistribute it and/or modify
@@ -17,7 +17,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # ══════════════════════════════════════════════════════════════
-# SecureDrop v4.0 — One-command build
+# Veil-Xfer v4.0 — One-command build
 # Usage: ./build.sh [release|clean|run]
 # ══════════════════════════════════════════════════════════════
 
@@ -30,7 +30,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔══════════════════════════════════════╗"
-echo "║  SecureDrop v5.0 — Build             ║"
+echo "║  Veil-Xfer v5.0 — Build             ║"
 echo "╚══════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -73,15 +73,15 @@ case "${1:-build}" in
         make -j$(nproc) release
         echo ""
         echo -e "${GREEN}Release binary ready:${NC}"
-        ls -lh securedrop.bin
+        ls -lh Veil-Xfer.bin
         ;;
     run)
         echo "Building and running..."
         make -j$(nproc)
         echo ""
-        echo -e "${GREEN}Launching SecureDrop...${NC}"
+        echo -e "${GREEN}Launching Veil-Xfer...${NC}"
         echo ""
-        ./securedrop
+        ./Veil-Xfer
         ;;
     build|*)
         echo "Building with $(nproc) cores..."
